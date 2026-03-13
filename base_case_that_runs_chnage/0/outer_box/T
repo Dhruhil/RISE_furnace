@@ -1,0 +1,144 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2406                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    arch        "LSB;label=32;scalar=64";
+    class       volScalarField;
+    location    "0/outer_box";
+    object      T;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [ 0 0 0 1 0 0 0 ];
+
+internalField   uniform 300;
+
+boundaryField
+{
+    
+    outer_box_to_inner_box
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           qr;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_steel_cylinder
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_heater_1
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_heater_2
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_heater_3
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_heater_4
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_heater_5
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_heater_6
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_heater_7
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    outer_box_to_heater_8
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+    
+    outer_box_to_brick_heater
+    {
+        type            compressible::turbulentTemperatureRadCoupledMixed;
+        value           uniform 300;
+        Tnbr            T;
+        qrNbr           none;
+        qr              none;
+        kappaMethod     solidThermo;
+    }
+
+    ".*"
+    {
+        type            zeroGradient;
+        value           uniform 300;
+    }
+}
+
+
+// ************************************************************************* //

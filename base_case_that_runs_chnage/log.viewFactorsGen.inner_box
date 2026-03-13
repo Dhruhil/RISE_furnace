@@ -1,0 +1,123 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2412                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _f00230df-20250528 OPENFOAM=2412 patch=250528 version=2412
+Arch   : "LSB;label=32;scalar=64"
+Exec   : viewFactorsGen -region inner_box
+Date   : Feb 13 2026
+Time   : 15:19:21
+Host   : 2214027e5d72
+PID    : 733
+I/O    : uncollated
+Case   : /home/openfoam/rise_furnace/base_case_that_runs_chnage
+nProcs : 1
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+Create mesh inner_box for time = 0
+
+
+Creating single cell mesh...
+
+Created single cell mesh...
+
+Total number of coarse faces: 2582
+
+View factor patches included in the calculation : 
+11
+(
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+)
+
+Number of rays :2116560
+hits : 1416112
+map distribute...
+
+Calculating view factors...
+F00: 0
+F01: 0.06932843
+F02: 0.027832077
+F03: 0.11788893
+F04: 0.0060240635
+F05: 0.0081321281
+F06: 0
+F07: 0.57360086
+F08: 0.010799603
+F09: 0.010713274
+F010: 0.11788893
+F11: 0.0026811354
+F12: 0.10384474
+F13: 0.047372096
+F14: 0.038401451
+F15: 0.047352796
+F16: 0.038399595
+F17: 0.61763396
+F18: 0.036084186
+F19: 0.02601063
+F110: 0.025678607
+F22: 0
+F23: 0.034922253
+F24: 0.035976409
+F25: 0.034922608
+F26: 0.035976583
+F27: 0.51778899
+F28: 0.02999827
+F29: 0.024819454
+F210: 0.024829634
+F33: 0
+F34: 0.006446811
+F35: 0.0065129816
+F36: 0.11788893
+F37: 0.57408137
+F38: 0.0081416507
+F39: 0.0099451018
+F310: 0
+F44: 0
+F45: 0.11788893
+F46: 0.0065129819
+F47: 0.68654603
+F48: 0
+F49: 0
+F410: 0.0058862716
+F55: 0
+F56: 0.0064453707
+F57: 0.57444447
+F58: 0.11788893
+F59: 0
+F510: 0.009942003
+F66: 0
+F67: 0.68718276
+F68: 0.0060203607
+F69: 0.00589032
+F610: 0
+F77: 0.37964098
+F78: 0.049458049
+F79: 0.061436752
+F710: 0.061391907
+F88: 0
+F89: 0.11788893
+F810: 0.010713274
+F99: 0
+F910: 0.010799603
+F1010: 0
+Writing view factor matrix...
+End
+

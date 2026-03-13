@@ -1,0 +1,133 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2412                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    arch        "LSB;label=32;scalar=64";
+    class       polyBoundaryMesh;
+    location    "constant/inner_box/polyMesh";
+    object      boundary;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+11
+(
+    inner_box_to_heater_7
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          180;
+        startFace       8783;
+        sampleMode      nearestPatchFace;
+        sampleRegion    heater_7;
+        samplePatch     heater_7_to_inner_box;
+    }
+    inner_box_to_brick_heater
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          107;
+        startFace       8963;
+        sampleMode      nearestPatchFace;
+        sampleRegion    brick_heater;
+        samplePatch     brick_heater_to_inner_box;
+    }
+    inner_box_to_steel_cylinder
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          457;
+        startFace       9070;
+        sampleMode      nearestPatchFace;
+        sampleRegion    steel_cylinder;
+        samplePatch     steel_cylinder_to_inner_box;
+    }
+    inner_box_to_heater_6
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          180;
+        startFace       9527;
+        sampleMode      nearestPatchFace;
+        sampleRegion    heater_6;
+        samplePatch     heater_6_to_inner_box;
+    }
+    inner_box_to_heater_1
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          180;
+        startFace       9707;
+        sampleMode      nearestPatchFace;
+        sampleRegion    heater_1;
+        samplePatch     heater_1_to_inner_box;
+    }
+    inner_box_to_heater_2
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          180;
+        startFace       9887;
+        sampleMode      nearestPatchFace;
+        sampleRegion    heater_2;
+        samplePatch     heater_2_to_inner_box;
+    }
+    inner_box_to_heater_5
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          180;
+        startFace       10067;
+        sampleMode      nearestPatchFace;
+        sampleRegion    heater_5;
+        samplePatch     heater_5_to_inner_box;
+    }
+    inner_box_to_outer_box
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          578;
+        startFace       10247;
+        sampleMode      nearestPatchFace;
+        sampleRegion    outer_box;
+        samplePatch     outer_box_to_inner_box;
+    }
+    inner_box_to_heater_3
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          180;
+        startFace       10825;
+        sampleMode      nearestPatchFace;
+        sampleRegion    heater_3;
+        samplePatch     heater_3_to_inner_box;
+    }
+    inner_box_to_heater_4
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          180;
+        startFace       11005;
+        sampleMode      nearestPatchFace;
+        sampleRegion    heater_4;
+        samplePatch     heater_4_to_inner_box;
+    }
+    inner_box_to_heater_8
+    {
+        type            mappedWall;
+        inGroups        2(wall viewFactorWall);
+        nFaces          180;
+        startFace       11185;
+        sampleMode      nearestPatchFace;
+        sampleRegion    heater_8;
+        samplePatch     heater_8_to_inner_box;
+    }
+)
+
+// ************************************************************************* //

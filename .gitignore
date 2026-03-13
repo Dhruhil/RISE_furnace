@@ -1,1 +1,14 @@
 .venv/
+# OpenFOAM time directories (exclude numbered only, keep 0 and 0_orig)
+base_case_that_runs_chnage/[1-9]*/
+base_case_that_runs_chnage/[1-9][0-9]*/
+base_case_that_runs_chnage/[1-9][0-9][0-9]*/
+base_case_that_runs_chnage/VTK/
+base_case_that_runs_chnage/log_files/
+base_case_that_runs_chnage/figures/
+base_case_that_runs_chnage/results/
+base_case_that_runs_chnage/*.h5
+base_case_that_runs_chnage/*.pt
+base_case_that_runs_chnage/*.png
+base_case_that_runs_chnage/*.btr
+base_case_that_runs_chnage/*.msh

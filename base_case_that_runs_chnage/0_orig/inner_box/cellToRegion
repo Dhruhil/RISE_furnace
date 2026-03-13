@@ -1,0 +1,83 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2406                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    arch        "LSB;label=32;scalar=64";
+    class       volScalarField;
+    location    "0/inner_box";
+    object      cellToRegion;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 0 0 0 0 0 0];
+
+internalField   uniform 9;
+
+boundaryField
+{
+    inner_box_to_heater_7
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_brick_heater
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_steel_cylinder
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_heater_6
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_heater_1
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_heater_2
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_heater_5
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_outer_box
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_heater_3
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_heater_4
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    inner_box_to_heater_8
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+}
+
+
+// ************************************************************************* //
