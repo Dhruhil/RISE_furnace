@@ -21,16 +21,15 @@ _FURNACE_ROOT = _PROJECT_ROOT.parent
 
 
 def _find_base_case() -> Path:
-    """Locate base case directory automatically."""
     candidates = [
-        # Relative to project 
-        _FURNACE_ROOT / "base_case_that_runs_chnage",
+        # Same repo — this is the new correct path
+        _PROJECT_ROOT.parent / "base_case_that_runs_chnage",
         # NVIDIA container
-        Path("/workspace/rise_furnace/base_case_that_runs_chnage"),
+        Path("/workspace/rise_furnace/Simulating_Heat_Treatment_of_Cast_Metal_Products_using_OpenFOAM/base_case_that_runs_chnage"),
         # OpenFOAM container
+        Path("/home/openfoam/rise_furnace/Simulating_Heat_Treatment_of_Cast_Metal_Products_using_OpenFOAM/base_case_that_runs_chnage"),
+        # fallback old path
         Path("/home/openfoam/rise_furnace/base_case_that_runs_chnage"),
-        # Host machine
-        Path.home() / "OpenFOAM/rise_furnace/base_case_that_runs_chnage",
     ]
 
     # Check environment variable first
