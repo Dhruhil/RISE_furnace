@@ -1,0 +1,10 @@
+numpy>=1.24
+h5py>=3.8
+pyvista>=0.42
+python-dotenv>=1.0.0
+
+[dev]
+pytest>=7.0
+pytest-cov
+ruff
+mypy

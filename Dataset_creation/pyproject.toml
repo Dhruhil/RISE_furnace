@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openfoam-dataset-pipeline"
+version = "2.0.0"
+description = "Automated OpenFOAM case generation and dataset creation for ML training"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    # ── Already in PhysicsNeMo 25.06 container ──
+    # torch, physicsnemo, dgl, numpy, scipy,
+    # sklearn, matplotlib, h5py — all pre-installed
+    
+    # ── Only what container does NOT have ──
+    "python-dotenv>=1.0.0",
+    "pyvista>=0.42",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+create-cases   = "scripts.create_cases:main"
+create-dataset = "scripts.create_dataset:main"
+validate-cases = "scripts.validate_cases:main"
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["src*", "configs*", "scripts*"]
+
+[tool.ruff]
+line-length    = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version      = "3.10"
+warn_return_any     = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"

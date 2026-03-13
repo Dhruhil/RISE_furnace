@@ -1,0 +1,45 @@
+Metadata-Version: 2.4
+Name: openfoam-dataset-pipeline
+Version: 2.0.0
+Summary: Automated OpenFOAM case generation and dataset creation for ML training
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: pyvista>=0.42
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: mypy; extra == "dev"
+
+# OpenFOAM Dataset Pipeline
+
+Automated OpenFOAM case generation and ML dataset creation for
+cylinder-in-furnace heat transfer simulations.
+
+## Overview
+
+This pipeline:
+1. **Generates** parameterised OpenFOAM cases using Latin Hypercube Sampling
+2. **Runs** simulations (inside an OpenFOAM Docker container)
+3. **Extracts** temperature fields and builds a normalised HDF5 dataset
+
+## Quick Start
+
+```bash
+# 1. Configure paths
+cp .env.example .env
+# Edit .env with your paths
+
+# 2. Create cases
+make create-cases
+
+# 3. Validate before running
+make validate
+
+# 4. Run simulations (inside OpenFOAM container)
+bash run_all_openfoam.sh
+
+# 5. Build dataset
+make create-dataset

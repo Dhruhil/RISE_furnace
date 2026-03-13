@@ -1,0 +1,8 @@
+python-dotenv>=1.0.0
+pyvista>=0.42
+
+[dev]
+pytest>=7.0
+pytest-cov
+ruff
+mypy
