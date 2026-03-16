@@ -7,16 +7,14 @@ Works in any container or host environment.
 from __future__ import annotations
 
 import os
-from dotenv import load_dotenv  # ← add this
+from dotenv import load_dotenv  
 from dataclasses import dataclass, field
 from pathlib import Path
 
-load_dotenv()  # ← add this, reads .env file automatically
+load_dotenv()  
 
-# Project root = Pra_24/
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# rise_furnace/ directory (parent of Pra_24/)
 _FURNACE_ROOT = _PROJECT_ROOT.parent
 
 
@@ -64,19 +62,19 @@ class PipelineConfig:
     container_base_dir: str = field(
         default_factory=lambda: os.environ.get(
             "CONTAINER_BASE_DIR",
-            "/home/openfoam/rise_furnace/Pra_24",
+            "/home/openfoam/rise_furnace/Simulating_Heat_Treatment_of_Cast_Metal_Products_using_OpenFOAM/Dataset_creation",
         )
     )
 
     n_lhs_samples: int = field(
-        default_factory=lambda: int(os.environ.get("N_LHS_SAMPLES", "15"))
+        default_factory=lambda: int(os.environ.get("N_LHS_SAMPLES", "50"))
     )
 
     lhs_seed: int = field(
         default_factory=lambda: int(os.environ.get("LHS_SEED", "42"))
     )
 
-    max_parallel_jobs: int = field(          # ← add here
+    max_parallel_jobs: int = field(          
         default_factory=lambda: int(os.environ.get("MAX_PARALLEL_JOBS", "3"))
     )
 

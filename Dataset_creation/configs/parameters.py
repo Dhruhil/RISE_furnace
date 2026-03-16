@@ -109,8 +109,8 @@ class ParameterRanges:
       cz ± radius within [eps, z_max - eps]
     """
 
-    T_set: list[float] = field(default_factory=lambda: [900, 950, 1000])
-    cy: list[float] = field(default_factory=lambda: [0.15, 0.18, 0.20])
+    T_set: list[float] = field(default_factory=lambda: [850, 900, 950, 1000, 1050, 1100, 1150])
+    cy: list[float] = field(default_factory=lambda: [0.15, 0.18, 0.21])
     cz: list[float] = field(default_factory=lambda: [0.195])
     radius: list[float] = field(default_factory=lambda: [0.05])
     height: list[float] = field(default_factory=lambda: [0.10])
