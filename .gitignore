@@ -1,20 +1,32 @@
-# Allow .h5 files inside Dataset_creation/ root (the combined dataset)
-# Block everything inside Testing_Create_Dataset/
+# ── Large binary/simulation files ────────────────────────────────────────────
 
-# Block the entire Testing_Create_Dataset folder
+# ── OpenFOAM time directories (numbered folders) ─────────────────────────────
+base_case_that_runs_chnage/[1-9]*/
+base_case_that_runs_chnage/VTK/
+base_case_that_runs_chnage/results/
+base_case_that_runs_chnage/figures/
+base_case_that_runs_chnage/log_files/
+base_case_that_runs_chnage/log.*
+base_case_that_runs_chnage/*.btr
+base_case_that_runs_chnage/flat_XY_dataset.h5
+base_case_that_runs_chnage/steel_cylinder_T_timeseries.h5
+
+# ── GNN outputs ───────────────────────────────────────────────────────────────
+GNN_PhysicsNeMo_Official/outputs/
+GNN_PhysicsNeMo_Official/training_output.log
+
+# ── Dataset creation outputs ──────────────────────────────────────────────────
 Testing_Create_Dataset/
 
-# Python cache
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 .venv/
 *.egg-info/
 
-# Environment
+# ── Environment ───────────────────────────────────────────────────────────────
 .env
 
-# GNN training outputs
-GNN_Training/outputs/checkpoints/
-GNN_Training/outputs/predictions/
-GNN_Training/outputs/plots/
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log

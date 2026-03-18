@@ -1,13 +1,11 @@
 """
-MeshGraphNet wrapper using NVIDIA PhysicsNeMo official implementation.
+MeshGraphNet — NVIDIA PhysicsNeMo 25.06.
 
-PhysicsNeMo 25.06 provides:
-    physicsnemo.models.meshgraphnet.MeshGraphNet
+Confirmed forward signature:
+    forward(node_features, edge_features, graph: DGLGraph)
 
-This wrapper adds:
-  - convenience forward pass returning delta_T
-  - autoregressive rollout helper
-  - checkpoint save/load
+SPEED FIX: Uses pre-built DGL graph from dataset (batch.dgl_graph)
+instead of calling dgl.graph() every forward pass.
 """
 
 from __future__ import annotations
@@ -21,146 +19,157 @@ try:
     PHYSICSNEMO_AVAILABLE = True
 except ImportError:
     PHYSICSNEMO_AVAILABLE = False
-    print("[WARNING] physicsnemo not found — using fallback MeshGraphNet implementation.")
+    print("[INFO] physicsnemo not found — using built-in fallback.")
 
 from configs.base_config import BaseConfig
 
 
-# ---------------------------------------------------------------------------
-# Fallback: lightweight MeshGraphNet when PhysicsNeMo is not installed
-# ---------------------------------------------------------------------------
-class _MLPBlock(nn.Module):
-    def __init__(self, in_f: int, out_f: int, hidden: int = 128):
+class _MLP(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden, n_layers=2):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_f, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, out_f),
-        )
-        self.norm = nn.LayerNorm(out_f)
-
+        layers = [nn.Linear(in_dim, hidden), nn.ReLU()]
+        for _ in range(n_layers - 1):
+            layers += [nn.Linear(hidden, hidden), nn.ReLU()]
+        layers.append(nn.Linear(hidden, out_dim))
+        self.net  = nn.Sequential(*layers)
+        self.norm = nn.LayerNorm(out_dim)
     def forward(self, x):
         return self.norm(self.net(x))
 
 
-class _FallbackMGN(nn.Module):
-    """Minimal MeshGraphNet: encode → N message-passing steps → decode."""
-
-    def __init__(self, node_in: int, edge_in: int,
-                 hidden: int, n_layers: int, out: int):
+class _MPBlock(nn.Module):
+    def __init__(self, hidden):
         super().__init__()
-        self.node_encoder = _MLPBlock(node_in, hidden)
-        self.edge_encoder = _MLPBlock(edge_in, hidden)
+        self.edge_mlp = _MLP(3 * hidden, hidden, hidden)
+        self.node_mlp = _MLP(2 * hidden, hidden, hidden)
+    def forward(self, h_n, h_e, edge_index):
+        src, dst = edge_index[0], edge_index[1]
+        N = h_n.shape[0]
+        h_e = h_e + self.edge_mlp(torch.cat([h_n[src], h_n[dst], h_e], dim=-1))
+        agg = torch.zeros(N, h_e.shape[-1], device=h_n.device, dtype=h_n.dtype)
+        agg.scatter_add_(0, src.unsqueeze(-1).expand_as(h_e), h_e)
+        h_n = h_n + self.node_mlp(torch.cat([h_n, agg], dim=-1))
+        return h_n, h_e
 
-        self.edge_mlps = nn.ModuleList([_MLPBlock(3*hidden, hidden) for _ in range(n_layers)])
-        self.node_mlps = nn.ModuleList([_MLPBlock(2*hidden, hidden) for _ in range(n_layers)])
 
-        self.decoder = nn.Sequential(
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, out),
+class _FallbackMGN(nn.Module):
+    def __init__(self, node_in, edge_in, hidden, n_layers, out):
+        super().__init__()
+        self.node_encoder = _MLP(node_in, hidden, hidden)
+        self.edge_encoder = _MLP(edge_in, hidden, hidden)
+        self.mp_blocks    = nn.ModuleList([_MPBlock(hidden) for _ in range(n_layers)])
+        self.decoder      = nn.Sequential(
+            nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, out)
         )
-
     def forward(self, x, edge_index, edge_attr):
         h_n = self.node_encoder(x)
         h_e = self.edge_encoder(edge_attr)
-        row, col = edge_index
-
-        for edge_mlp, node_mlp in zip(self.edge_mlps, self.node_mlps):
-            # Edge update
-            msg = torch.cat([h_n[row], h_n[col], h_e], dim=-1)
-            h_e = h_e + edge_mlp(msg)
-            # Node update (sum aggregation)
-            agg = torch.zeros_like(h_n).scatter_add(
-                0, row.unsqueeze(-1).expand_as(h_e), h_e)
-            h_n = h_n + node_mlp(torch.cat([h_n, agg], dim=-1))
-
+        for block in self.mp_blocks:
+            h_n, h_e = block(h_n, h_e, edge_index)
         return self.decoder(h_n)
 
 
-# ---------------------------------------------------------------------------
-# Public wrapper
-# ---------------------------------------------------------------------------
 class HeatTreatmentGNN(nn.Module):
-    """
-    Graph Neural Network surrogate for heat treatment temperature prediction.
-
-    Predicts delta_T (normalised) given the current state graph.
-    Autoregressive rollout is handled externally in rollout.py.
-    """
 
     def __init__(self, cfg: BaseConfig):
         super().__init__()
         self.cfg = cfg
+        h = cfg.hidden_features
 
         if PHYSICSNEMO_AVAILABLE:
-            # Use official PhysicsNeMo MeshGraphNet
             self.gnn = _MGN(
-                input_node_dim    = cfg.node_in_features,
-                input_edge_dim    = cfg.edge_in_features,
-                output_node_dim   = cfg.output_features,
-                hidden_dim        = cfg.hidden_features,
-                num_message_passing_layers = cfg.n_message_passing_layers,
+                input_dim_nodes           = cfg.node_in_features,
+                input_dim_edges           = cfg.edge_in_features,
+                output_dim                = cfg.output_features,
+                processor_size            = cfg.n_message_passing_layers,
+                mlp_activation_fn         = "relu",
+                num_layers_node_processor = 2,
+                num_layers_edge_processor = 2,
+                hidden_dim_processor      = h,
+                hidden_dim_node_encoder   = h,
+                num_layers_node_encoder   = 2,
+                hidden_dim_edge_encoder   = h,
+                num_layers_edge_encoder   = 2,
+                hidden_dim_node_decoder   = h,
+                num_layers_node_decoder   = 2,
+                aggregation               = "sum",
             )
             self._backend = "physicsnemo"
         else:
-            # Fallback lightweight GNN
             self.gnn = _FallbackMGN(
-                node_in  = cfg.node_in_features,
-                edge_in  = cfg.edge_in_features,
-                hidden   = cfg.hidden_features,
-                n_layers = cfg.n_message_passing_layers,
-                out      = cfg.output_features,
+                cfg.node_in_features, cfg.edge_in_features,
+                h, cfg.n_message_passing_layers, cfg.output_features,
             )
             self._backend = "fallback"
 
-        n_params = sum(p.numel() for p in self.parameters())
-        print(f"HeatTreatmentGNN [{self._backend}] | Parameters: {n_params:,}")
+        n_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"  HeatTreatmentGNN [{self._backend}]")
+        print(f"    hidden={h}  layers={cfg.n_message_passing_layers}  "
+              f"node_in={cfg.node_in_features}  edge_in={cfg.edge_in_features}")
+        print(f"    Trainable parameters: {n_params:,}")
 
     def forward(self, batch: Batch) -> torch.Tensor:
-        """
-        Args:
-            batch: PyG Batch with x, edge_index, edge_attr
+        if self._backend == "physicsnemo":
+            import dgl
 
-        Returns:
-            delta_T_norm: (n_nodes_total, 1)
-        """
-        if PHYSICSNEMO_AVAILABLE:
-            return self.gnn(batch.x, batch.edge_index, batch.edge_attr)
+            if hasattr(batch, "dgl_graph") and batch.dgl_graph is not None:
+                import dgl as dgl_lib
+                dgl_graph = batch.dgl_graph
+                if isinstance(dgl_graph, list):
+                    # batch_size > 1: batch all DGL graphs into one
+                    g = dgl_lib.batch(dgl_graph).to(batch.x.device)
+                else:
+                    g = dgl_graph.to(batch.x.device)
+            else:
+                src = batch.edge_index[0]
+                dst = batch.edge_index[1]
+                g = dgl.graph(
+                    (src.cpu(), dst.cpu()),
+                    num_nodes=batch.x.shape[0],
+                ).to(batch.x.device)
+
+            out = self.gnn(batch.x, batch.edge_attr, g)
         else:
-            return self.gnn(batch.x, batch.edge_index, batch.edge_attr)
+            out = self.gnn(batch.x, batch.edge_index, batch.edge_attr)
 
-    def predict_delta_T(self, batch: Batch) -> torch.Tensor:
-        """Same as forward — explicit name for clarity."""
+        if out.dim() == 1:
+            out = out.unsqueeze(-1)
+        return out
+
+    def predict_delta_T(self, batch):
         return self.forward(batch)
 
-    # ------------------------------------------------------------------
-    def save(self, path: str, epoch: int, optimizer_state: dict | None = None,
-             metrics: dict | None = None) -> None:
-        """Save checkpoint."""
-        checkpoint = {
+    def save(self, path, epoch, optimizer_state=None,
+             scheduler_state=None, metrics=None):
+        import pathlib
+        pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
             "epoch":           epoch,
             "model_state":     self.state_dict(),
             "optimizer_state": optimizer_state,
+            "scheduler_state": scheduler_state,
             "metrics":         metrics or {},
             "backend":         self._backend,
-            "cfg": {
-                "node_in_features":        self.cfg.node_in_features,
-                "edge_in_features":        self.cfg.edge_in_features,
-                "hidden_features":         self.cfg.hidden_features,
+            "model_cfg": {
+                "node_in_features":         self.cfg.node_in_features,
+                "edge_in_features":         self.cfg.edge_in_features,
+                "hidden_features":          self.cfg.hidden_features,
                 "n_message_passing_layers": self.cfg.n_message_passing_layers,
-                "output_features":         self.cfg.output_features,
+                "output_features":          self.cfg.output_features,
             },
-        }
-        torch.save(checkpoint, path)
-        print(f"  Checkpoint saved → {path}  (epoch {epoch})")
+        }, path)
+        mae_str = (f"  val_MAE={metrics['mae']:.3f} K"
+                   if metrics and "mae" in metrics else "")
+        print(f"  Checkpoint saved → {path}  (epoch {epoch}){mae_str}")
 
     @classmethod
-    def load(cls, path: str, cfg: BaseConfig,
-             device: str = "cpu") -> "HeatTreatmentGNN":
-        """Load model from checkpoint."""
-        ckpt = torch.load(path, map_location=device)
+    def load(cls, path, cfg, device="cpu"):
+        ckpt  = torch.load(path, map_location=device)
         model = cls(cfg)
         model.load_state_dict(ckpt["model_state"])
         model.to(device)
-        print(f"  Loaded checkpoint from {path}  (epoch {ckpt['epoch']})")
+        metrics = ckpt.get("metrics", {})
+        mae_str = (f"  val_MAE={metrics['mae']:.3f} K"
+                   if "mae" in metrics else "")
+        print(f"  Checkpoint loaded ← {path}  (epoch {ckpt.get('epoch','?')}){mae_str}")
         return model
