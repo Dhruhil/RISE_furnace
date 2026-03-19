@@ -29,6 +29,15 @@ from utils.checkpoint import CheckpointManager
 # ─────────────────────────────────────────────────────────────────────────────
 # Lambda curriculum
 # ─────────────────────────────────────────────────────────────────────────────
+def _denorm_dT(delta_T_pred, batch):
+    """Denormalise using dT_std, not Y_std."""
+    if hasattr(batch, "dT_std"):
+        s = float(batch.dT_std[0]) if hasattr(batch.dT_std, "__len__") else float(batch.dT_std)
+        m = float(batch.dT_mean[0]) if hasattr(batch.dT_mean, "__len__") else float(batch.dT_mean)
+    else:
+        s = float(batch.Y_std[0]) if hasattr(batch.Y_std, "__len__") else float(batch.Y_std)
+        m = 0.0
+    return delta_T_pred.squeeze(-1).cpu() * s + m
 
 def get_lambda(epoch: int, n_epochs: int) -> float:
     p = epoch / n_epochs
@@ -110,8 +119,7 @@ def evaluate_one_step(model, loader, criterion, device, cfg):
         total_loss += loss.item()
         n_batches  += 1
 
-        T_pred_K = (batch.T_current.cpu()
-            + delta_T_pred.squeeze(-1).cpu() * Y_std).numpy().ravel()
+        T_pred_K = (batch.T_current.cpu() + _denorm_dT(delta_T_pred, batch)).numpy().ravel()
         T_true_K = batch.T_next.cpu().numpy().ravel()
         all_pred.append(T_pred_K)
         all_true.append(T_true_K)
@@ -165,7 +173,7 @@ def run_verification_rollout(model, cfg, device, save_dir):
     for sim_i in eval_ds.sim_indices:
         T_pred, T_true = rollout_from_dataset(
             model, eval_ds, sim_i,
-            start_t=0, n_steps=n_total, device=str(device),
+            start_t=20, n_steps=n_total-20, device=str(device),
         )
 
         m1 = compute_metrics(T_pred[:n_train+1].ravel(), T_true[:n_train+1].ravel())

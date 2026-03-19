@@ -41,7 +41,7 @@ class BaseConfig:
     n_message_passing_layers: int = 15
     output_features:          int = 1
 
-    batch_size:      int   = 8       # A100 has 40GB — batch 8 is fine
+    batch_size:      int   = 4
     n_epochs:        int   = 200
     learning_rate:   float = 1e-3
     lr_decay_factor: float = 0.5
@@ -68,7 +68,7 @@ class BaseConfig:
     wandb_run_name:      str  = "meshgraphnet_optionA_alvis_A100"
 
     device:      str = "cuda"
-    num_workers: int = 4       # A100 on Alvis — use 4 workers
+    num_workers: int = 0       # A100 on Alvis — use 4 workers
 
     @property
     def n_train_steps(self) -> int:

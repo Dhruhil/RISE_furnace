@@ -1,15 +1,10 @@
 """
 MeshGraphNet — NVIDIA PhysicsNeMo 25.06.
-
-Confirmed forward signature:
-    forward(node_features, edge_features, graph: DGLGraph)
-
-SPEED FIX: Uses pre-built DGL graph from dataset (batch.dgl_graph)
-instead of calling dgl.graph() every forward pass.
+Builds DGL graph from PyG batch.edge_index directly in forward().
+This is the simplest correct approach — no pre-built DGL graphs needed.
 """
 
 from __future__ import annotations
-
 import torch
 import torch.nn as nn
 from torch_geometric.data import Batch
@@ -19,7 +14,7 @@ try:
     PHYSICSNEMO_AVAILABLE = True
 except ImportError:
     PHYSICSNEMO_AVAILABLE = False
-    print("[INFO] physicsnemo not found — using built-in fallback.")
+    print("[INFO] physicsnemo not found — using fallback.")
 
 from configs.base_config import BaseConfig
 
@@ -111,23 +106,14 @@ class HeatTreatmentGNN(nn.Module):
     def forward(self, batch: Batch) -> torch.Tensor:
         if self._backend == "physicsnemo":
             import dgl
-
-            if hasattr(batch, "dgl_graph") and batch.dgl_graph is not None:
-                import dgl as dgl_lib
-                dgl_graph = batch.dgl_graph
-                if isinstance(dgl_graph, list):
-                    # batch_size > 1: batch all DGL graphs into one
-                    g = dgl_lib.batch(dgl_graph).to(batch.x.device)
-                else:
-                    g = dgl_graph.to(batch.x.device)
-            else:
-                src = batch.edge_index[0]
-                dst = batch.edge_index[1]
-                g = dgl.graph(
-                    (src.cpu(), dst.cpu()),
-                    num_nodes=batch.x.shape[0],
-                ).to(batch.x.device)
-
+            # Build DGL graph from PyG batch.edge_index
+            # PyG already combines all graphs in the batch with correct offsets
+            # batch.x.shape[0] = total nodes across all graphs
+            # batch.edge_index = combined edges with correct node indices
+            n_nodes = batch.x.shape[0]
+            src = batch.edge_index[0].cpu()
+            dst = batch.edge_index[1].cpu()
+            g = dgl.graph((src, dst), num_nodes=n_nodes).to(batch.x.device)
             out = self.gnn(batch.x, batch.edge_attr, g)
         else:
             out = self.gnn(batch.x, batch.edge_index, batch.edge_attr)
@@ -160,7 +146,7 @@ class HeatTreatmentGNN(nn.Module):
         }, path)
         mae_str = (f"  val_MAE={metrics['mae']:.3f} K"
                    if metrics and "mae" in metrics else "")
-        print(f"  Checkpoint saved → {path}  (epoch {epoch}){mae_str}")
+        print(f"  Checkpoint saved -> {path}  (epoch {epoch}){mae_str}")
 
     @classmethod
     def load(cls, path, cfg, device="cpu"):
@@ -171,5 +157,5 @@ class HeatTreatmentGNN(nn.Module):
         metrics = ckpt.get("metrics", {})
         mae_str = (f"  val_MAE={metrics['mae']:.3f} K"
                    if "mae" in metrics else "")
-        print(f"  Checkpoint loaded ← {path}  (epoch {ckpt.get('epoch','?')}){mae_str}")
+        print(f"  Checkpoint loaded <- {path}  (epoch {ckpt.get('epoch','?')}){mae_str}")
         return model

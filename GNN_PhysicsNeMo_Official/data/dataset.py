@@ -1,9 +1,7 @@
 """
-Dataset — Option A temporal split with DGL graph pre-building.
-
-SPEED FIX: DGL graphs built ONCE in __init__, reused every batch.
-Was: 3 seconds per batch = 151 min/epoch
-Now: ~0.05 seconds per batch = ~3 min/epoch (60x faster)
+Dataset — Option A temporal split.
+FIXED: correct delta_T normalisation using 95th percentile of training steps 20-319.
+dT_mean = 0 to avoid bias. dT_std from training sims only.
 """
 
 from __future__ import annotations
@@ -14,9 +12,7 @@ import torch
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
-
 import h5py
-import dgl
 
 from configs.base_config import BaseConfig
 from data.graph_builder import build_knn_graph
@@ -53,12 +49,14 @@ class HeatTreatmentDataset(Dataset):
         self.col = {k: j for j, k in enumerate(feature_cols)}
         c        = self.col
 
+        # Node feature normalisation (10 features)
         node_keys  = ["x", "y", "z", "T_set", "T_set", "cy", "cz", "kappa", "Cp", "rho"]
         self._nmu  = np.array([self.X_mean[c[k]] for k in node_keys], dtype=np.float32)
         self._nstd = np.array([self.X_std[c[k]]  for k in node_keys], dtype=np.float32)
         self._nmu[3]  = self.Y_mean
         self._nstd[3] = self.Y_std
 
+        # Reconstruct per-simulation arrays
         self._simulations: list[dict] = []
         for i in range(n_sims):
             start  = sim_starts[i]
@@ -78,9 +76,25 @@ class HeatTreatmentDataset(Dataset):
                 "n_cells": n_cells,
             })
 
+        # Compute dT normalisation from training simulations only, steps 20-319
+        # Use dT_mean=0 to avoid bias (model should predict both + and - dT)
+        # Use 95th percentile of |dT| as dT_std for robustness
         n_test  = max(1, int(n_sims * cfg.test_fraction))
         n_val   = max(1, int(n_sims * cfg.val_fraction))
         n_train = n_sims - n_val - n_test
+        train_indices = list(range(0, n_train))
+
+        all_dT = []
+        for i in train_indices:
+            T = self._simulations[i]["T_3d"]
+            dT = np.diff(T, axis=0)[20:320].ravel()
+            all_dT.append(dT)
+        all_dT       = np.concatenate(all_dT).astype(np.float64)
+        self.dT_mean = 0.0
+        self.dT_std  = float(np.percentile(np.abs(all_dT), 95)) + 1e-8
+        print(f"  dT_std (95th pct of |dT| from train sims steps 20-319): {self.dT_std:.4f} K")
+
+        # Simulation split
         split_map = {
             "train": list(range(0,              n_train)),
             "val":   list(range(n_train,        n_train + n_val)),
@@ -88,6 +102,7 @@ class HeatTreatmentDataset(Dataset):
         }
         self.sim_indices: list[int] = split_map[split]
 
+        # Enumerate (sim_i, t_i) pairs — skip rapid heating phase (steps 0-19)
         self._index: list[tuple[int, int]] = []
         for sim_i in self.sim_indices:
             n_t = self._simulations[sim_i]["n_times"] - rollout_steps
@@ -95,10 +110,10 @@ class HeatTreatmentDataset(Dataset):
                 t_max = min(n_t, cfg.n_train_steps - rollout_steps)
             else:
                 t_max = n_t
-            for t_i in range(t_max):
+            for t_i in range(20, t_max):
                 self._index.append((sim_i, t_i))
 
-        # Pre-build PyG k-NN graphs
+        # Pre-build k-NN graphs
         self._graphs: dict[int, tuple] = {}
         for sim_i in self.sim_indices:
             coords = torch.tensor(
@@ -107,26 +122,12 @@ class HeatTreatmentDataset(Dataset):
             edge_index, edge_attr = build_knn_graph(coords, cfg.graph_k_neighbors)
             self._graphs[sim_i] = (edge_index, edge_attr)
 
-        # SPEED FIX: Pre-build DGL graphs ONCE here
-        # Without this fix: dgl.graph() called 12122 times per epoch = 151 min
-        # With this fix: dgl.graph() called 50 times total = done in seconds
-        # Detect GPU availability
-        _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self._dgl_graphs: dict[int, dgl.DGLGraph] = {}
-        for sim_i in self.sim_indices:
-            edge_index, _ = self._graphs[sim_i]
-            n_nodes = self._simulations[sim_i]["n_cells"]
-            g = dgl.graph(
-                (edge_index[0].cpu(), edge_index[1].cpu()),
-                num_nodes=n_nodes,
-            ).to(_device)   # move to GPU once here — never again during training
-            self._dgl_graphs[sim_i] = g
         print(
             f"  [{split:5s}|{split_mode:10s}]  "
             f"{len(self._index):>8,} pairs  "
             f"across {len(self.sim_indices):>2} sims  "
-            f"t = 0–{(cfg.n_train_steps if split_mode=='training' else cfg.n_total_steps)*cfg.dt:.0f}s"
+            f"t=0-{(cfg.n_train_steps if split_mode=='training' else cfg.n_total_steps)*cfg.dt:.0f}s  "
+            f"dT_std={self.dT_std:.3f}K"
         )
 
     def __len__(self) -> int:
@@ -150,8 +151,11 @@ class HeatTreatmentDataset(Dataset):
         ]).astype(np.float32)
 
         node_norm    = (node_feats - self._nmu) / (self._nstd + 1e-8)
-        delta_T      = (T_tp1 - T_t).reshape(-1, 1).astype(np.float32)
-        delta_T_norm = delta_T / (self.Y_std + 1e-8)
+        if self.split == "train":
+            noise = np.random.normal(0, 0.01, size=node_norm.shape[0]).astype(np.float32)
+            node_norm[:, 3] += noise
+        delta_T      = (T_tp1 - T_t).reshape(-1, 1).astype(np.float64)
+        delta_T_norm = (delta_T / (self.dT_std + 1e-8)).astype(np.float32)
 
         data = Data(
             x          = torch.tensor(node_norm,    dtype=torch.float32),
@@ -168,20 +172,16 @@ class HeatTreatmentDataset(Dataset):
             node_std   = torch.tensor(self._nstd,   dtype=torch.float32),
             Y_mean     = float(self.Y_mean),
             Y_std      = float(self.Y_std),
+            dT_mean    = float(self.dT_mean),
+            dT_std     = float(self.dT_std),
         )
-        # Attach pre-built DGL graph — forward() uses this directly
-        data.dgl_graph = self._dgl_graphs[sim_i]
-        data.sim_idx   = sim_i
-        data.t_idx     = t_i
+        data.sim_idx = sim_i
+        data.t_idx   = t_i
         return data
 
 
-def get_dataloaders(
-    cfg:           BaseConfig,
-    rollout_steps: int = 1,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
-    # Alvis A100 — batch_size=8, num_workers=4 for speed
-    kw = dict(batch_size=cfg.batch_size, num_workers=cfg.num_workers, pin_memory=True)
+def get_dataloaders(cfg, rollout_steps=1):
+    kw = dict(batch_size=cfg.batch_size, num_workers=0, pin_memory=False)
     train_ds = HeatTreatmentDataset(
         cfg.dataset_path, cfg, "train", rollout_steps, split_mode="training"
     )
@@ -198,7 +198,7 @@ def get_dataloaders(
     )
 
 
-def get_evaluation_dataset(cfg: BaseConfig) -> HeatTreatmentDataset:
+def get_evaluation_dataset(cfg):
     return HeatTreatmentDataset(
         cfg.dataset_path, cfg,
         split="test", rollout_steps=1, split_mode="evaluation",
