@@ -152,7 +152,7 @@ class HeatTreatmentDataset(Dataset):
 
         node_norm    = (node_feats - self._nmu) / (self._nstd + 1e-8)
         if self.split == "train":
-            noise = np.random.normal(0, 0.01, size=node_norm.shape[0]).astype(np.float32)
+            noise = np.random.normal(0, 0.02, size=node_norm.shape[0]).astype(np.float32)
             node_norm[:, 3] += noise
         delta_T      = (T_tp1 - T_t).reshape(-1, 1).astype(np.float64)
         delta_T_norm = ((delta_T - self.dT_mean) / (self.dT_std + 1e-8)).astype(np.float32)

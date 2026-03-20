@@ -56,7 +56,7 @@ class BaseConfig:
 
     sigma_sb:       float = 5.67e-8
     epsilon_steel:  float = 0.80
-    w_conduction:   float = 1.0
+    w_conduction:   float = 0.3
     w_convection:   float = 0.5
     w_radiation:    float = 0.3
     char_thickness: float = 0.01

@@ -51,6 +51,8 @@ def get_lambda(epoch: int, n_epochs: int) -> float:
 # One training epoch
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+
 def train_one_epoch(model, loader, optimizer, criterion, device, cfg, lam, epoch=0):
     model.train()
     criterion.lambda_physics = lam
