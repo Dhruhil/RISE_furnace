@@ -56,6 +56,9 @@ class HeatTreatmentDataset(Dataset):
         # col 3 = T_current: insert actual temperature stats explicitly
         self._nmu  = np.insert(self._nmu,  3, self.Y_mean).astype(np.float32)
         self._nstd = np.insert(self._nstd, 3, self.Y_std).astype(np.float32)
+        # col 10 = time: append time normalisation (0 to 4000s)
+        self._nmu  = np.append(self._nmu,  np.float32(self.X_mean[c["t"]]))
+        self._nstd = np.append(self._nstd, np.float32(self.X_std[c["t"]]))
 
         # Reconstruct per-simulation arrays
         self._simulations: list[dict] = []
@@ -149,6 +152,7 @@ class HeatTreatmentDataset(Dataset):
             T_t,
             X_t[:, c["T_set"]], X_t[:, c["cy"]], X_t[:, c["cz"]],
             X_t[:, c["kappa"]], X_t[:, c["Cp"]], X_t[:, c["rho"]],
+            np.full(len(T_t), t_i * 10.0, dtype=np.float32),
         ]).astype(np.float32)
 
         node_norm    = (node_feats - self._nmu) / (self._nstd + 1e-8)

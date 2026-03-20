@@ -72,6 +72,7 @@ def rollout_from_dataset(
             X_t[:, c["T_set"]],                 # ← ground truth furnace setpoint
             X_t[:, c["cy"]], X_t[:, c["cz"]],
             X_t[:, c["kappa"]], X_t[:, c["Cp"]], X_t[:, c["rho"]],
+            np.full(len(T_current), t_idx * 10.0, dtype=np.float32),
         ]).astype(np.float32)
 
         node_norm = (node_feats - nmu) / (nstd + 1e-8)

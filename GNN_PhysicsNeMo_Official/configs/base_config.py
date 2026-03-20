@@ -35,7 +35,7 @@ class BaseConfig:
     graph_k_neighbors: int  = 16
     use_radius_graph:  bool = False
 
-    node_in_features:         int = 10
+    node_in_features:         int = 11
     edge_in_features:         int = 4
     hidden_features:          int = 128
     n_message_passing_layers: int = 15
