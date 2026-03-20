@@ -1,7 +1,7 @@
 """
 Dataset — Option A temporal split.
 FIXED: correct delta_T normalisation using 95th percentile of training steps 20-319.
-dT_mean = 0 to avoid bias. dT_std from training sims only.
+dT_mean from training sims. dT_std from training sims only.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ class HeatTreatmentDataset(Dataset):
             })
 
         # Compute dT normalisation from training simulations only, steps 20-319
-        # Use dT_mean=0 to avoid bias (model should predict both + and - dT)
+        # Use real dT_mean to remove systematic bias from rollout
         # Use 95th percentile of |dT| as dT_std for robustness
         n_test  = max(1, int(n_sims * cfg.test_fraction))
         n_val   = max(1, int(n_sims * cfg.val_fraction))
@@ -87,12 +87,12 @@ class HeatTreatmentDataset(Dataset):
         all_dT = []
         for i in train_indices:
             T = self._simulations[i]["T_3d"]
-            dT = np.diff(T, axis=0)[20:320].ravel()
+            dT = np.diff(T, axis=0)[20:].ravel()
             all_dT.append(dT)
         all_dT       = np.concatenate(all_dT).astype(np.float64)
-        self.dT_mean = 0.0
-        self.dT_std  = float(np.percentile(np.abs(all_dT), 95)) + 1e-8
-        print(f"  dT_std (95th pct of |dT| from train sims steps 20-319): {self.dT_std:.4f} K")
+        self.dT_mean = float(np.mean(all_dT))                      # ← use real mean
+        self.dT_std  = float(np.std(all_dT)) + 1e-8               # ← use std not percentile
+        print(f"  dT_mean={self.dT_mean:.5f}K  dT_std={self.dT_std:.4f}K")
 
         # Simulation split
         split_map = {
@@ -155,7 +155,7 @@ class HeatTreatmentDataset(Dataset):
             noise = np.random.normal(0, 0.01, size=node_norm.shape[0]).astype(np.float32)
             node_norm[:, 3] += noise
         delta_T      = (T_tp1 - T_t).reshape(-1, 1).astype(np.float64)
-        delta_T_norm = (delta_T / (self.dT_std + 1e-8)).astype(np.float32)
+        delta_T_norm = ((delta_T - self.dT_mean) / (self.dT_std + 1e-8)).astype(np.float32)
 
         data = Data(
             x          = torch.tensor(node_norm,    dtype=torch.float32),

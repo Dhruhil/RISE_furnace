@@ -41,17 +41,17 @@ def _denorm_dT(delta_T_pred, batch):
 
 def get_lambda(epoch: int, n_epochs: int) -> float:
     p = epoch / n_epochs
-    if   p < 0.25: return 0.001
-    elif p < 0.50: return 0.01
-    elif p < 0.75: return 0.05
-    else:          return 0.10
+    if   p < 0.50: return 0.001
+    elif p < 0.70: return 0.005
+    elif p < 0.85: return 0.01
+    else:          return 0.05
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # One training epoch
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train_one_epoch(model, loader, optimizer, criterion, device, cfg, lam):
+def train_one_epoch(model, loader, optimizer, criterion, device, cfg, lam, epoch=0):
     model.train()
     criterion.lambda_physics = lam
     total_loss = total_cond = total_conv = total_rad = 0.0
@@ -70,11 +70,16 @@ def train_one_epoch(model, loader, optimizer, criterion, device, cfg, lam):
         Y_std = (float(batch.Y_std[0])
                  if hasattr(batch.Y_std, "__len__") else float(batch.Y_std))
 
+        dT_std  = (float(batch.dT_std[0])  if hasattr(batch.dT_std,  "__len__") else float(batch.dT_std))
+        dT_mean = (float(batch.dT_mean[0]) if hasattr(batch.dT_mean, "__len__") else float(batch.dT_mean))
         loss, breakdown = criterion(
             delta_T_pred=delta_T_pred, target=batch.y,
             batch=batch, Y_std=Y_std, dt=cfg.dt,
+            dT_std=dT_std, dT_mean=dT_mean,
         )
         loss.backward()
+        
+
         if cfg.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()

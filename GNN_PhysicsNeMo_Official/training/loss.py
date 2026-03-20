@@ -66,12 +66,14 @@ def conduction_loss(
     Cp:                torch.Tensor,
     dt:                float,
     Y_std:             float,
+    dT_std:            float = 1.0,
+    dT_mean:           float = 0.0,
 ) -> torch.Tensor:
     N   = T_current_K.shape[0]
     src = edge_index[0]
     dst = edge_index[1]
 
-    dT_dt = (delta_T_pred_norm.squeeze(-1) * Y_std) / dt
+    dT_dt = (delta_T_pred_norm.squeeze(-1) * dT_std + dT_mean) / dt
 
     T_diff = T_current_K[dst] - T_current_K[src]
     lap_T  = torch.zeros(N, device=T_current_K.device, dtype=T_current_K.dtype)
@@ -115,8 +117,10 @@ def radiation_loss(
     Y_std:             float,
     epsilon:           float = 0.80,
     thickness:         float = 0.01,
+    dT_std:            float = 1.0,
+    dT_mean:           float = 0.0,
 ) -> torch.Tensor:
-    dT_dt_model = (delta_T_pred_norm.squeeze(-1) * Y_std) / dt
+    dT_dt_model = (delta_T_pred_norm.squeeze(-1) * dT_std + dT_mean) / dt
     Q_rad       = epsilon * SIGMA_SB * (T_set_K.pow(4) - T_current_K.pow(4))
     dT_dt_rad   = Q_rad / (rho * Cp * thickness)
     scale       = dT_dt_rad.abs().mean().clamp(min=1e-8)
@@ -165,7 +169,9 @@ class PhysicsInformedLoss(nn.Module):
         batch,                        # PyG Batch
         Y_std:        float,
         dt:           float = 10.0,
-    ) -> tuple[torch.Tensor, dict]:
+        dT_std:       float = 1.0,
+        dT_mean:      float = 0.0,   
+ ) -> tuple[torch.Tensor, dict]:
         """
         Returns (total_loss, breakdown_dict).
         breakdown_dict keys: data, cond, conv, rad, physics, total
@@ -215,15 +221,24 @@ class PhysicsInformedLoss(nn.Module):
         L_cond = conduction_loss(
             delta_T_pred, T_now, batch.edge_index,
             kappa, rho, Cp, dt, Y_std,
+            dT_std=dT_std, dT_mean=dT_mean, 
         )
         L_conv = convection_loss(T_next, T_now, T_set)
         L_rad  = radiation_loss(
             delta_T_pred, T_now, T_set, rho, Cp, dt, Y_std,
             epsilon=self.epsilon, thickness=self.thickness,
+            dT_std=dT_std, dT_mean=dT_mean,
         )
 
         L_physics = self.w_cond * L_cond + self.w_conv * L_conv + self.w_rad * L_rad
         L_total   = L_data + self.lambda_physics * L_physics
+
+        # Equilibrium constraint: near T_set, dT should approach zero
+        delta_T_K = delta_T_pred.squeeze(-1) * Y_std
+        gap = (T_set - T_now).abs()
+        near_eq_weight = torch.exp(-gap / 20.0)
+        L_eq = (delta_T_K * near_eq_weight).pow(2).mean()
+        L_total = L_total + 0.5 * L_eq
 
         return L_total, {
             "data":    L_data.item(),

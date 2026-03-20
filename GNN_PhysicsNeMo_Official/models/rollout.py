@@ -85,12 +85,12 @@ def rollout_from_dataset(
         delta_T_norm = model(batch).squeeze(-1).reshape(-1).cpu().numpy()
 
         # Denormalise using dT_std
-        delta_T   = delta_T_norm * dataset.dT_std
+        delta_T   = delta_T_norm * dataset.dT_std + dataset.dT_mean
         T_current = T_current + delta_T
 
         # Physical constraint: temperature cannot exceed furnace setpoint
         T_set = X_t[:, c["T_set"]]
-        T_current = np.minimum(T_current, T_set + 10.0)  # allow 10K overshoot
+        T_current = np.minimum(T_current, T_set + 2.0)
         T_current = np.maximum(T_current, 290.0)          # cannot go below room temp
         T_rollout[step + 1] = T_current.astype(np.float32)
 
