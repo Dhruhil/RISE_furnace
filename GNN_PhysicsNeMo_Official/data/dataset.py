@@ -50,11 +50,12 @@ class HeatTreatmentDataset(Dataset):
         c        = self.col
 
         # Node feature normalisation (10 features)
-        node_keys  = ["x", "y", "z", "T_set", "T_set", "cy", "cz", "kappa", "Cp", "rho"]
+        node_keys  = ["x", "y", "z", "T_set", "cy", "cz", "kappa", "Cp", "rho"]
         self._nmu  = np.array([self.X_mean[c[k]] for k in node_keys], dtype=np.float32)
         self._nstd = np.array([self.X_std[c[k]]  for k in node_keys], dtype=np.float32)
-        self._nmu[3]  = self.Y_mean
-        self._nstd[3] = self.Y_std
+        # col 3 = T_current: insert actual temperature stats explicitly
+        self._nmu  = np.insert(self._nmu,  3, self.Y_mean).astype(np.float32)
+        self._nstd = np.insert(self._nstd, 3, self.Y_std).astype(np.float32)
 
         # Reconstruct per-simulation arrays
         self._simulations: list[dict] = []

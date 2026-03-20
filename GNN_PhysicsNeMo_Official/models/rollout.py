@@ -18,7 +18,7 @@ def rollout_from_dataset(
     model:    HeatTreatmentGNN,
     dataset,
     sim_idx:  int,
-    start_t:  int = 20,
+    start_t:  int = 40,
     n_steps:  int | None = None,
     device:   str = "cuda",
 ) -> tuple[np.ndarray, np.ndarray]:
