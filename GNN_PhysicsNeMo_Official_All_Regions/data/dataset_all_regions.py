@@ -29,6 +29,7 @@ REGION_IDS = {
     "heater_7":       8,
     "heater_8":       9,
     "brick_heater":   10,
+    "outer_box":      11,
 }
 
 
@@ -184,7 +185,7 @@ class AllRegionsDataset(Dataset):
             coords[:, 2],
             T_norm,
             np.full(len(T_t), Tset_norm,   dtype=np.float32),
-            np.full(len(T_t), region_id/10, dtype=np.float32),
+            np.full(len(T_t), region_id/11, dtype=np.float32),
             np.full(len(T_t), t_norm,       dtype=np.float32),
         ]).astype(np.float32)
 

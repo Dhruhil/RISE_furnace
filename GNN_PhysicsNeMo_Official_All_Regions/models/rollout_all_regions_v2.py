@@ -11,6 +11,7 @@ from models.meshgraphnet import HeatTreatmentGNN
 HEATER_REGIONS = {
     "heater_1", "heater_2", "heater_3", "heater_4",
     "heater_5", "heater_6", "heater_7", "heater_8",
+    "brick_heater",
 }
 
 @torch.no_grad()
@@ -64,7 +65,7 @@ def rollout_all_regions(model, dataset, sim_idx, start_t=40, device="cuda"):
                 coords[:, 2],
                 T_norm,
                 np.full(n_cells, Tset_norm,    dtype=np.float32),
-                np.full(n_cells, region_id/10, dtype=np.float32),
+                np.full(n_cells, region_id/11, dtype=np.float32),
                 np.full(n_cells, t_norm,       dtype=np.float32),
             ]).astype(np.float32)
 

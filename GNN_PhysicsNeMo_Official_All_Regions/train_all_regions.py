@@ -22,16 +22,11 @@ from utils.logging import setup_logging, log_metrics
 
 
 def get_lambda_ar(epoch: int, n_epochs: int) -> float:
-    """Smooth physics curriculum for all-regions training."""
+    """Smooth exponential physics curriculum."""
+    import math
     p = epoch / n_epochs
-    if   p < 0.50: return 0.001
-    elif p < 0.65: return 0.003
-    elif p < 0.75: return 0.005
-    elif p < 0.85: return 0.008
-    elif p < 0.93: return 0.012
-    else:          return 0.015
-
-
+    lam = 0.001 * math.exp(4.6 * p)
+    return min(lam, 0.10)
 def physics_loss_allregions(
     pred:       torch.Tensor,
     batch,
@@ -43,7 +38,7 @@ def physics_loss_allregions(
     Physics losses for all regions:
     1. Conduction: rho*Cp*dT/dt = kappa * laplacian(T)  [steel only]
     2. Convection: T_steel <= T_set                      [all regions]
-    3. Radiation:  Stefan-Boltzmann                      [steel only]
+/mimer/NOBACKUP/groups/revar/GNN_PhysicsNeMo_Official/outputs/logs/allregions_%j.log    3. Radiation:  Stefan-Boltzmann                      [steel only]
     """
     SIGMA = 5.67e-8
     dt    = 10.0

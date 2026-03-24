@@ -30,11 +30,12 @@ class BaseConfig:
     all_regions: list = field(default_factory=lambda: [
         "steel_cylinder",
         "inner_box",
+        "outer_box",
         "heater_1", "heater_2", "heater_3", "heater_4",
         "heater_5", "heater_6", "heater_7", "heater_8",
         "brick_heater",
     ])
-    n_regions: int = 11
+    n_regions: int = 12
     target_col: str = "T"
     n_features:  int = 15
 
