@@ -1,20 +1,17 @@
 """
-Physics-Informed FNO Training — All Regions.
+Physics-Informed FNO Training — All Regions (with outer_box).
 Master's Thesis: Simulating Heat Treatment using OpenFOAM and AI
 
-Trains on t=0-3200s (80%) per simulation.
-After training, verifies on t=3200-4000s (20%, never seen during training).
+PHYSICS:
+  1. CONDUCTION  — Fourier:         rho*Cp*dT/dt = kappa*laplacian(T)
+  2. CONVECTION  — Newton:          T must not exceed T_set
+  3. RADIATION   — Stefan-Boltzmann: Q = eps*sigma*(T_set^4 - T^4)
 
-Usage:
-    python train.py --epochs 200 --lr 1e-3
-    python train.py --epochs 60 --batch 16
+CURRICULUM: data-only first, then gradually add physics.
 """
 from __future__ import annotations
 
-import argparse
-import sys
-import time
-import json
+import argparse, sys, time, json
 from pathlib import Path
 
 import numpy as np
@@ -31,15 +28,59 @@ from training.scheduler import build_scheduler
 from utils.metrics import compute_metrics, within_tolerance
 from utils.logging import setup_logging, log_metrics
 from utils.checkpoint import CheckpointManager
+# ─────────────────────────────────────────────────────────────────────
+# Physics curriculum — SAME smooth exponential as GNN all-regions
+# ─────────────────────────────────────────────────────────────────────
+import math as _math
+
+def get_lambda_fno(epoch: int, n_epochs: int) -> float:
+    """Smooth exponential — identical to GNN get_lambda_ar()."""
+    p = epoch / n_epochs
+    lam = p  # linear: 0→1
+    return min(lam, 1.0)
+
+SIGMA_SB = 5.67e-8
+
+def fno_physics_loss(pred_norm, y_norm, x, cfg, dataset):
+    """
+    Physics loss for FNO — same 3 equations as GNN, same weights.
+    L = 0.5*L_conv + 0.3*L_cond + 0.2*L_rad
+    """
+    dt = cfg.dt
+    T_pred = pred_norm.squeeze(1) * dataset.T_std + dataset.T_mean
+    T_now  = x[:, 0, :] * dataset.T_std + dataset.T_mean
+    T_set  = x[:, 1, :] * dataset.Tset_std + dataset.Tset_mean
+    dT_pred = T_pred - T_now
+    dT_dt   = dT_pred / dt
+
+    # 1. Convection: T ≤ T_set (weight 0.5)
+    is_heater = (T_now > T_set * 1.05).float()
+    overshoot = torch.nn.functional.relu(T_pred - T_set) * (1.0 - is_heater)
+    L_conv = (overshoot / T_set.clamp(min=300)).pow(2).mean()
+
+    # 2. Conduction: spectral smoothness (weight 0.3)
+    pred_fft = torch.fft.rfft(pred_norm.squeeze(1), dim=-1)
+    n_freq = pred_fft.shape[-1]
+    cutoff = max(n_freq // 3, 1)
+    high_freq = pred_fft[:, cutoff:].abs().pow(2)
+    L_cond = high_freq.mean()
+
+    # 3. Radiation: Stefan-Boltzmann (weight 0.2)
+    Q_rad = cfg.epsilon_steel * SIGMA_SB * (T_set.pow(4) - T_now.pow(4))
+    dT_rad = Q_rad / (7800.0 * 450.0 * cfg.char_thickness)
+    scale_r = dT_rad.abs().mean().clamp(min=1e-8)
+    L_rad = ((dT_dt - dT_rad) / scale_r).pow(2).mean()
+
+    L_physics = 0.5 * L_conv + 0.3 * L_cond + 0.2 * L_rad
+    return L_physics, {"conv": L_conv.item(), "cond": L_cond.item(), "rad": L_rad.item()}
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Validation
-# ─────────────────────────────────────────────────────────────────────
+
+SIGMA_SB = 5.67e-8
+
 
 @torch.no_grad()
 def validate(model, loader, device):
-    """One-step validation — compute loss and metrics in Kelvin."""
     model.eval()
     total_loss, n = 0.0, 0
     all_pred, all_true = [], []
@@ -52,7 +93,8 @@ def validate(model, loader, device):
         total_loss += loss.item()
         n += 1
 
-        T_pred_K = (pred.squeeze(1).cpu().numpy() * ds.T_std + ds.T_mean).ravel()
+        dT_pred  = pred.squeeze(1).cpu().numpy() * ds.dT_std + ds.dT_mean
+        T_pred_K = (T_cur.numpy() + dT_pred).ravel()
         T_true_K = T_next.numpy().ravel()
         all_pred.append(T_pred_K)
         all_true.append(T_true_K)
@@ -66,12 +108,7 @@ def validate(model, loader, device):
     return m
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Verification rollout
-# ─────────────────────────────────────────────────────────────────────
-
 def run_verification(model, cfg, device, save_dir):
-    """Full rollout on test sims — Phase 1 + Phase 2 per region."""
     dataset = get_fno_eval_dataset(cfg)
     n_train = cfg.n_train_steps
     start_t = 40
@@ -81,41 +118,32 @@ def run_verification(model, cfg, device, save_dir):
     all_p1_r2, all_p2_r2   = [], []
     per_region_mae = {}
 
-    sep  = "=" * 70
-    dash = "-" * 72
-
+    sep = "=" * 70
     print(f"\n{sep}")
-    print(f"  FNO ROLLOUT EVALUATION — ALL REGIONS (t={start_t*cfg.dt:.0f} -> {cfg.predict_time_end:.0f}s)")
+    print(f"  FNO ROLLOUT EVALUATION — ALL REGIONS")
     print(f"{sep}")
-    print(f"  {'Sim':>4}  {'Region':>16}  {'P1 MAE':>10}  {'P2 MAE':>10}")
-    print(f"  {dash}")
 
     for sim_i in dataset.sim_indices:
-        results = rollout_fno_all_regions(
-            model, dataset, sim_i, start_t=start_t, device=device
-        )
+        results = rollout_fno_all_regions(model, dataset, sim_i, start_t=start_t, device=device)
         sim_p1_pred, sim_p1_true = [], []
         sim_p2_pred, sim_p2_true = [], []
 
         for region, (T_pred, T_true) in results.items():
-            ns = T_pred.shape[0]
+            ns  = T_pred.shape[0]
             p1s = min(p1_end + 1, ns)
-            m1 = compute_metrics(T_pred[:p1s].ravel(), T_true[:p1s].ravel())
+            m1  = compute_metrics(T_pred[:p1s].ravel(), T_true[:p1s].ravel())
             sim_p1_pred.append(T_pred[:p1s].ravel())
             sim_p1_true.append(T_true[:p1s].ravel())
 
             if p1_end < ns and p1_end < T_true.shape[0]:
                 gt_end = min(ns, T_true.shape[0])
-                m2 = compute_metrics(T_pred[p1_end:gt_end].ravel(),
-                                     T_true[p1_end:gt_end].ravel())
+                m2 = compute_metrics(T_pred[p1_end:gt_end].ravel(), T_true[p1_end:gt_end].ravel())
                 sim_p2_pred.append(T_pred[p1_end:gt_end].ravel())
                 sim_p2_true.append(T_true[p1_end:gt_end].ravel())
             else:
                 m2 = {"mae": float("nan")}
 
-            print(f"  {sim_i:>4}  {region:>16}  "
-                  f"P1={m1['mae']:.2f}K  P2={m2['mae']:.2f}K")
-
+            print(f"  {sim_i:>4}  {region:>16}  P1={m1['mae']:.2f}K  P2={m2['mae']:.2f}K")
             if region not in per_region_mae:
                 per_region_mae[region] = {"p1": [], "p2": []}
             per_region_mae[region]["p1"].append(m1["mae"])
@@ -123,57 +151,38 @@ def run_verification(model, cfg, device, save_dir):
                 per_region_mae[region]["p2"].append(m2["mae"])
 
         if sim_p1_pred:
-            agg1 = compute_metrics(np.concatenate(sim_p1_pred),
-                                   np.concatenate(sim_p1_true))
-            all_p1_mae.append(agg1["mae"])
-            all_p1_r2.append(agg1["r2"])
+            agg1 = compute_metrics(np.concatenate(sim_p1_pred), np.concatenate(sim_p1_true))
+            all_p1_mae.append(agg1["mae"]); all_p1_r2.append(agg1["r2"])
         if sim_p2_pred:
-            agg2 = compute_metrics(np.concatenate(sim_p2_pred),
-                                   np.concatenate(sim_p2_true))
-            all_p2_mae.append(agg2["mae"])
-            all_p2_r2.append(agg2["r2"])
-        print()
+            agg2 = compute_metrics(np.concatenate(sim_p2_pred), np.concatenate(sim_p2_true))
+            all_p2_mae.append(agg2["mae"]); all_p2_r2.append(agg2["r2"])
 
     summary = {
-        "phase1": {
-            "mean_mae": float(np.mean(all_p1_mae)) if all_p1_mae else None,
-            "mean_r2":  float(np.mean(all_p1_r2))  if all_p1_r2  else None,
-        },
-        "phase2": {
-            "mean_mae": float(np.mean(all_p2_mae)) if all_p2_mae else None,
-            "mean_r2":  float(np.mean(all_p2_r2))  if all_p2_r2  else None,
-        },
-        "per_region": {
-            r: {"p1": float(np.mean(v["p1"])),
-                "p2": float(np.mean(v["p2"])) if v["p2"] else None}
-            for r, v in per_region_mae.items()
-        },
+        "phase1": {"mean_mae": float(np.mean(all_p1_mae)) if all_p1_mae else None,
+                    "mean_r2":  float(np.mean(all_p1_r2))  if all_p1_r2  else None},
+        "phase2": {"mean_mae": float(np.mean(all_p2_mae)) if all_p2_mae else None,
+                    "mean_r2":  float(np.mean(all_p2_r2))  if all_p2_r2  else None},
+        "per_region": {r: {"p1": float(np.mean(v["p1"])),
+                           "p2": float(np.mean(v["p2"])) if v["p2"] else None}
+                       for r, v in per_region_mae.items()},
     }
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
     with open(f"{save_dir}/fno_evaluation.json", "w") as f:
         json.dump(summary, f, indent=2)
 
+    p1, p2 = summary["phase1"], summary["phase2"]
     print(f"\n{sep}")
-    print(f"  FNO SUMMARY — ALL REGIONS")
-    print(f"{sep}")
-    p1 = summary["phase1"]
-    p2 = summary["phase2"]
     print(f"  Phase 1 (training):     MAE={p1['mean_mae']:.2f}K  R2={p1['mean_r2']:.4f}")
     print(f"  Phase 2 (verification): MAE={p2['mean_mae']:.2f}K  R2={p2['mean_r2']:.4f}")
-    print(f"\n  Per-region:")
     for r, v in summary["per_region"].items():
-        p2_str = f"{v['p2']:.2f}K" if v["p2"] else "N/A"
-        print(f"    {r:>16}: P1={v['p1']:.2f}K  P2={p2_str}")
+        p2s = f"{v['p2']:.2f}K" if v["p2"] else "N/A"
+        print(f"    {r:>16}: P1={v['p1']:.2f}K  P2={p2s}")
     return summary
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Main training loop
-# ─────────────────────────────────────────────────────────────────────
-
 def main(cfg=None):
-    parser = argparse.ArgumentParser(description="Train PhysicsNeMo FNO — All Regions")
+    parser = argparse.ArgumentParser(description="Train PhysicsNeMo FNO")
     parser.add_argument("--epochs",  type=int,   default=None)
     parser.add_argument("--lr",      type=float, default=None)
     parser.add_argument("--batch",   type=int,   default=None)
@@ -194,80 +203,90 @@ def main(cfg=None):
 
     device = torch.device(
         args.device if args.device
-        else ("cuda" if torch.cuda.is_available() else "cpu")
-    )
+        else ("cuda" if torch.cuda.is_available() else "cpu"))
 
     logger = setup_logging(cfg)
 
     sep = "=" * 70
     print(f"\n{sep}")
-    print(f"  FNO TRAINING — All Regions (NVIDIA PhysicsNeMo)")
+    print(f"  FNO TRAINING — All Regions + Physics")
     print(f"  Dataset : {cfg.dataset_path}")
     print(f"  Device  : {device}")
     print(f"  Epochs  : {cfg.n_epochs}  LR: {cfg.learning_rate}  Batch: {cfg.batch_size}")
     print(f"  FNO     : modes={cfg.fno_modes} layers={cfg.fno_layers} latent={cfg.fno_latent}")
+    print(f"  Physics : Fourier conduction + Newton convection + Stefan-Boltzmann radiation")
     print(f"  Train   : t=0-{cfg.train_time_end:.0f}s | Verify: t={cfg.train_time_end:.0f}-{cfg.predict_time_end:.0f}s")
     print(f"{sep}\n")
 
-    # ── Data ──────────────────────────────────────────────────────────
     train_loader, val_loader, test_loader = get_fno_dataloaders(cfg)
+    ds = train_loader.dataset
 
-    # ── Model ─────────────────────────────────────────────────────────
     model     = HeatTreatmentFNO(cfg).to(device)
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay
-    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
     scheduler = build_scheduler(optimizer, cfg)
     ckpt_mgr  = CheckpointManager(cfg.checkpoint_dir)
 
-    # ── Training loop ─────────────────────────────────────────────────
     print(f"  {'Ep':>5} | {'TrLoss':>9} | {'VaLoss':>9} | "
-          f"{'MAE[K]':>7} | {'R2':>7} | {'W5K':>6} | {'LR':>9}")
-    print(f"  {'-'*70}")
+          f"{'MAE[K]':>7} | {'R2':>7} | {'W5K':>6} | {'LR':>9} | {'lam':>7}")
+    print(f"  {'-'*80}")
 
     t0 = time.time()
+    phys_norm = 1.0  # running normalizer for physics loss scale
+
     for epoch in range(1, cfg.n_epochs + 1):
-        # Train
+        lam = get_lambda_fno(epoch, cfg.n_epochs)
+
         model.train()
-        total_loss, nb = 0.0, 0
-        for x, y, *_ in train_loader:
-            x, y = x.to(device), y.to(device)
+        total_loss, total_phys, total_data, nb = 0.0, 0.0, 0.0, 0
+        for x, y, T_cur, T_next_gt, sim_is, regions, rids, t_is in train_loader:
+            x, y      = x.to(device), y.to(device)
             optimizer.zero_grad()
-            pred = model(x)
-            loss = F.mse_loss(pred, y)
+
+            pred      = model(x)
+            loss_data = F.mse_loss(pred, y)
+
+            loss_phys = torch.tensor(0.0, device=device)
+            if lam > 1e-10:
+                loss_phys, _ = fno_physics_loss(
+                    pred, y, x, cfg, ds)
+
+            loss = (1.0 - lam) * loss_data + lam * loss_phys / (phys_norm + 1e-8)
             loss.backward()
             if cfg.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optimizer.step()
-            total_loss += loss.item()
-            nb += 1
-        tr_loss = total_loss / max(nb, 1)
 
-        # Validate
+            total_loss += loss.item()
+            total_phys += loss_phys.item()
+            total_data += loss_data.item()
+            nb += 1
+
+        tr_loss = total_loss / max(nb, 1)
+        tr_data = total_data / max(nb, 1)
+        tr_phys = total_phys / max(nb, 1)
+        # Update running normalizer: keep physics same scale as data
+        if tr_phys > 1e-8:
+            phys_norm = 0.9 * phys_norm + 0.1 * (tr_phys / (tr_data + 1e-8))
+
         val_m = validate(model, val_loader, device)
         scheduler.step(val_m["loss"])
         lr = optimizer.param_groups[0]["lr"]
 
-        # Checkpoint
         is_best = ckpt_mgr.update(model, optimizer, scheduler, epoch, val_m)
-
         if epoch % cfg.save_every_n_epochs == 0:
             ckpt_mgr.save_periodic(model, optimizer, scheduler, epoch, val_m)
 
-        # Log
         if epoch % cfg.log_every_n_epochs == 0 or epoch == 1 or is_best:
             tag = "  < BEST" if is_best else ""
             print(f"  {epoch:>5} | {tr_loss:>9.5f} | {val_m['loss']:>9.5f} | "
                   f"{val_m['mae']:>7.2f} | {val_m['r2']:>7.4f} | "
-                  f"{val_m['within_5K']:>6.1f} | {lr:>9.2e}{tag}")
+                  f"{val_m['within_5K']:>6.1f} | {lr:>9.2e} | {lam:>7.4f}{tag}")
             log_metrics(logger, epoch, tr_loss, val_m, cfg)
 
     elapsed = time.time() - t0
     print(f"\n  Training done in {elapsed/60:.1f} min")
     print(f"  Best MAE: {ckpt_mgr.best_mae:.3f}K  (epoch {ckpt_mgr.best_epoch})")
-    print(f"  Checkpoint: {ckpt_mgr.best_path}")
 
-    # ── Verification rollout ──────────────────────────────────────────
     print(f"\n  Loading best model for rollout evaluation...")
     model = HeatTreatmentFNO.load(ckpt_mgr.best_path, cfg, str(device))
     run_verification(model, cfg, str(device), f"{cfg.output_dir}/evaluation")

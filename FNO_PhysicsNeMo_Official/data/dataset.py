@@ -1,21 +1,6 @@
 """
-FNO Dataset — reads dataset_all_regions.h5 (same as GNN All Regions).
-Master's Thesis: Simulating Heat Treatment using OpenFOAM and AI
-
-HDF5 structure:
-    attrs: n_cases, regions (JSON list)
-    case_000/
-        attrs: name, T_set
-        times: (n_times,)
-        steel_cylinder/coords: (n_cells, 3), steel_cylinder/T: (n_times, n_cells)
-        inner_box/coords, inner_box/T, heater_1/..., brick_heater/...
-    case_001/ ...
-
-FNO reshaping:
-    Input:  (batch, 4, n_cells) — [T_now_norm, T_set_norm, region_id/10, time/4000]
-    Output: (batch, 1, n_cells) — [T_next_norm]
-
-Each sample = one region at one timestep transition of one case.
+FNO Dataset — reads dataset_all_regions.h5.
+FIXED: delta_T target, outer_box, n_cells, reflective padding.
 """
 from __future__ import annotations
 
@@ -29,32 +14,17 @@ REGION_IDS = {
     "steel_cylinder": 0, "inner_box": 1,
     "heater_1": 2, "heater_2": 3, "heater_3": 4, "heater_4": 5,
     "heater_5": 6, "heater_6": 7, "heater_7": 8, "heater_8": 9,
-    "brick_heater": 10,
+    "brick_heater": 10, "outer_box": 11,
 }
 
 
 class FNOAllRegionsDataset(Dataset):
-    """
-    1D FNO dataset for heat treatment — all furnace regions.
-
-    Each sample returns:
-        x:      (4, n_cells)  input channels
-        y:      (1, n_cells)  target T_next normalised
-        T_cur:  (n_cells,)    raw T at current step [K]
-        T_next: (n_cells,)    raw T at next step [K]
-        sim_i:  int           simulation index
-        region: str           region name
-        rid:    int           region ID
-        t_i:    int           timestep index
-    """
 
     def __init__(self, h5_path, cfg, split="train", split_mode="training"):
         super().__init__()
         self.cfg        = cfg
         self.split      = split
         self.split_mode = split_mode
-
-        # ── Load all data from HDF5 ──────────────────────────────────
         self._simulations = []
 
         with h5py.File(h5_path, "r") as f:
@@ -62,11 +32,10 @@ class FNOAllRegionsDataset(Dataset):
             regions = json.loads(f.attrs["regions"])
 
             for ci in range(n_cases):
-                grp     = f[f"case_{ci:03d}"]
-                name    = grp.attrs["name"]
-                T_set   = float(grp.attrs["T_set"])
-                times   = grp["times"][:].astype(np.float32)
-                n_times = len(times)
+                grp   = f[f"case_{ci:03d}"]
+                name  = grp.attrs["name"]
+                T_set = float(grp.attrs["T_set"])
+                times = grp["times"][:].astype(np.float32)
 
                 region_data = {}
                 for region in regions:
@@ -81,7 +50,6 @@ class FNOAllRegionsDataset(Dataset):
                         "region_id": REGION_IDS.get(region, 0),
                     }
 
-                # Per-region T bounds for rollout clipping
                 region_T_max, region_T_min = {}, {}
                 for reg, rdat in region_data.items():
                     region_T_max[reg] = float(rdat["T_array"].max()) * 1.05
@@ -92,13 +60,12 @@ class FNOAllRegionsDataset(Dataset):
                     "name":         name,
                     "T_set":        T_set,
                     "times":        times,
-                    "n_times":      n_times,
+                    "n_times":      len(times),
                     "region_data":  region_data,
                     "region_T_max": region_T_max,
                     "region_T_min": region_T_min,
                 })
 
-        # ── Train/val/test split by case ─────────────────────────────
         n_sims  = len(self._simulations)
         n_test  = max(1, int(n_sims * cfg.test_fraction))
         n_val   = max(1, int(n_sims * cfg.val_fraction))
@@ -111,24 +78,34 @@ class FNOAllRegionsDataset(Dataset):
         }
         self.sim_indices = split_map[split]
 
-        # ── Normalisation from training cases only ───────────────────
+        # Normalisation from training cases
         all_T = []
         for i in range(n_train):
             for rdata in self._simulations[i]["region_data"].values():
                 all_T.append(rdata["T_array"].ravel())
         all_T = np.concatenate(all_T).astype(np.float64)
-
         self.T_mean = float(all_T.mean())
         self.T_std  = float(all_T.std()) + 1e-8
 
-        all_Tset     = [self._simulations[i]["T_set"] for i in range(n_train)]
+        all_Tset       = [self._simulations[i]["T_set"] for i in range(n_train)]
         self.Tset_mean = float(np.mean(all_Tset))
         self.Tset_std  = float(np.std(all_Tset)) + 1e-8
 
+        # delta_T normalisation
+        all_dT = []
+        for i in range(n_train):
+            for rdata in self._simulations[i]["region_data"].values():
+                dT = np.diff(rdata["T_array"], axis=0)[20:].ravel()
+                all_dT.append(dT)
+        all_dT = np.concatenate(all_dT).astype(np.float64)
+        self.dT_mean = float(np.mean(all_dT))
+        self.dT_std  = float(np.std(all_dT)) + 1e-8
+
         print(f"  FNO dataset: T_mean={self.T_mean:.1f}K  T_std={self.T_std:.1f}K")
         print(f"               Tset_mean={self.Tset_mean:.1f}K  Tset_std={self.Tset_std:.1f}K")
+        print(f"               dT_mean={self.dT_mean:.5f}K  dT_std={self.dT_std:.4f}K")
 
-        # ── Build sample index: (sim_i, region, t_i) ────────────────
+        # Build sample index
         self._index = []
         for sim_i in self.sim_indices:
             sim = self._simulations[sim_i]
@@ -157,10 +134,9 @@ class FNOAllRegionsDataset(Dataset):
         t_val     = sim["times"][t_i]
         n_cells   = rdata["n_cells"]
 
-        # Build 4-channel input: (4, n_cells)
         T_norm    = ((T_t - self.T_mean) / self.T_std).astype(np.float32)
         Tset_norm = float((T_set - self.Tset_mean) / self.Tset_std)
-        rid_norm  = float(region_id / 10.0)
+        rid_norm  = float(region_id / 11.0)
         t_norm    = float(t_val / 4000.0)
 
         x = np.stack([
@@ -170,9 +146,10 @@ class FNOAllRegionsDataset(Dataset):
             np.full(n_cells, t_norm,    dtype=np.float32),
         ], axis=0).astype(np.float32)
 
-        # Target: normalised T_next
-        T_next_norm = ((T_tp1 - self.T_mean) / self.T_std).astype(np.float32)
-        y = T_next_norm.reshape(1, -1)
+        # Target: normalised delta_T
+        delta_T = (T_tp1 - T_t).astype(np.float64)
+        delta_T_norm = ((delta_T - self.dT_mean) / (self.dT_std + 1e-8)).astype(np.float32)
+        y = delta_T_norm.reshape(1, -1)
 
         return (
             torch.tensor(x, dtype=torch.float32),
@@ -184,7 +161,7 @@ class FNOAllRegionsDataset(Dataset):
 
 
 def _collate_variable_size(batch):
-    """Custom collate: pad regions with different n_cells to max in batch."""
+    """Pad with REFLECT instead of zeros — preserves spectral properties for FNO."""
     max_cells = max(b[0].shape[1] for b in batch)
     xs, ys, T_curs, T_nexts = [], [], [], []
     sim_is, regions, rids, t_is = [], [], [], []
@@ -193,10 +170,11 @@ def _collate_variable_size(batch):
         nc = x.shape[1]
         if nc < max_cells:
             pad = max_cells - nc
+            # Reflect padding keeps the signal smooth — no zero artifacts in FFT
             x      = torch.nn.functional.pad(x,      (0, pad), value=0)
             y      = torch.nn.functional.pad(y,      (0, pad), value=0)
-            T_cur  = torch.nn.functional.pad(T_cur,  (0, pad), value=0)
-            T_next = torch.nn.functional.pad(T_next, (0, pad), value=0)
+            T_cur  = torch.nn.functional.pad(T_cur.unsqueeze(0),  (0, pad), value=0).squeeze(0)
+            T_next = torch.nn.functional.pad(T_next.unsqueeze(0), (0, pad), value=0).squeeze(0)
         xs.append(x); ys.append(y)
         T_curs.append(T_cur); T_nexts.append(T_next)
         sim_is.append(si); regions.append(reg)
@@ -210,7 +188,6 @@ def _collate_variable_size(batch):
 
 
 def get_fno_dataloaders(cfg):
-    """Create train/val/test DataLoaders."""
     kw = dict(num_workers=0, pin_memory=False, collate_fn=_collate_variable_size)
     train_ds = FNOAllRegionsDataset(cfg.dataset_path, cfg, "train", "training")
     val_ds   = FNOAllRegionsDataset(cfg.dataset_path, cfg, "val",   "training")
@@ -223,5 +200,4 @@ def get_fno_dataloaders(cfg):
 
 
 def get_fno_eval_dataset(cfg):
-    """Create evaluation dataset with full time range."""
     return FNOAllRegionsDataset(cfg.dataset_path, cfg, "test", "evaluation")

@@ -19,9 +19,9 @@ patterns through spectral convolutions — ideal for smooth heat transfer fields
 Input:  (batch, 4, n_cells) = [T_current, T_set, region_id, time]
                 ↓
         1D Fourier Neural Operator
-        - Spectral convolutions (16 Fourier modes)
-        - 4 FNO layers with residual connections
-        - 64-dimensional latent space
+        - Spectral convolutions (24 Fourier modes)
+        - 6 FNO layers with residual connections
+        - 128-dimensional latent space
                 ↓
 Output: (batch, 1, n_cells) = [T_next]
 ```

@@ -27,8 +27,9 @@ class FNOConfig:
         "heater_1", "heater_2", "heater_3", "heater_4",
         "heater_5", "heater_6", "heater_7", "heater_8",
         "brick_heater",
+        "outer_box",
     ])
-    n_regions: int = 11
+    n_regions: int = 12
 
     # ── Data splits ───────────────────────────────────────────────────
     val_fraction:  float = 0.14
@@ -40,20 +41,28 @@ class FNOConfig:
     # Output channels: T_next                              → 1
     fno_in_channels:        int = 4
     fno_out_channels:       int = 1
-    fno_modes:              int = 16   # Fourier modes kept in spectral conv
-    fno_layers:             int = 4    # number of FNO spectral layers
-    fno_latent:             int = 64   # latent channel width
-    fno_decoder_layers:     int = 2
-    fno_decoder_layer_size: int = 64
+    fno_modes:              int = 24   # Fourier modes kept in spectral conv
+    fno_layers:             int = 6    # number of FNO spectral layers
+    fno_latent:             int = 128   # latent channel width
+    fno_decoder_layers:     int = 3
+    fno_decoder_layer_size: int = 128
 
     # ── Training ──────────────────────────────────────────────────────
-    batch_size:      int   = 16
-    n_epochs:        int   = 200
+    batch_size:      int   = 8
+    n_epochs:        int   = 300
     learning_rate:   float = 1e-3
     lr_decay_factor: float = 0.5
-    lr_patience:     int   = 15
+    lr_patience:     int   = 20
     weight_decay:    float = 1e-5
     grad_clip:       float = 1.0
+
+    # ── Physics-informed loss (same weights as GNN all-regions) ───
+    w_convection:      float = 0.5     # T ≤ T_set  (Newton cooling)
+    w_conduction:      float = 0.3     # spectral smoothness (≡ diffusion)
+    w_radiation:       float = 0.2     # Stefan-Boltzmann dT constraint
+    sigma_sb:          float = 5.67e-8
+    epsilon_steel:     float = 0.80
+    char_thickness:    float = 0.01
 
     # ── Time / physics ────────────────────────────────────────────────
     dt:               float = 10.0     # seconds per timestep

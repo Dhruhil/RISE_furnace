@@ -1,15 +1,18 @@
 """
 Autoregressive rollout for FNO — all regions.
-Master's Thesis: Simulating Heat Treatment using OpenFOAM and AI
-
-Supports future prediction beyond available simulation data.
-Each region is rolled out independently.
+FIXED: brick_heater + heater_1-8 clamped as boundary conditions.
 """
 from __future__ import annotations
 
 import numpy as np
 import torch
 from models.fno_model import HeatTreatmentFNO
+
+HEATER_REGIONS = {
+    "heater_1", "heater_2", "heater_3", "heater_4",
+    "heater_5", "heater_6", "heater_7", "heater_8",
+    "brick_heater",
+}
 
 
 @torch.no_grad()
@@ -21,22 +24,6 @@ def rollout_fno_all_regions(
     n_steps:  int  = None,
     device:   str  = "cuda",
 ) -> dict:
-    """
-    Roll out FNO for all regions of one simulation.
-
-    Args:
-        model:    trained FNO model
-        dataset:  FNOAllRegionsDataset instance
-        sim_idx:  simulation index (into dataset._simulations)
-        start_t:  starting timestep (default 40 = 400s)
-        n_steps:  total steps to predict (None = up to data end)
-        device:   cuda or cpu
-
-    Returns:
-        dict: {region_name: (T_pred, T_true)}
-              T_pred: (n_steps+1, n_cells) — predicted temperatures
-              T_true: (n_gt+1, n_cells)    — ground truth (shorter if future)
-    """
     model.eval()
     model.to(device)
 
@@ -58,6 +45,13 @@ def rollout_fno_all_regions(
         T_max_region = sim["region_T_max"][region]
         T_min_region = sim["region_T_min"][region]
 
+        # Heaters + brick_heater are boundary conditions — use ground truth
+        if region in HEATER_REGIONS:
+            gt_len = min(n_steps + 1, data_steps + 1)
+            T_true = rdata["T_array"][start_t: start_t + gt_len]
+            results[region] = (T_true.copy(), T_true)
+            continue
+
         T_current = rdata["T_array"][start_t].copy().astype(np.float64)
 
         T_rollout    = np.zeros((n_steps + 1, n_cells), dtype=np.float32)
@@ -74,7 +68,7 @@ def rollout_fno_all_regions(
             T_norm    = ((T_current - dataset.T_mean) /
                          (dataset.T_std + 1e-8)).astype(np.float32)
             Tset_norm = float((T_set - dataset.Tset_mean) / dataset.Tset_std)
-            rid_norm  = float(region_id / 10.0)
+            rid_norm  = float(region_id / 11.0)
 
             x = np.stack([
                 T_norm,
@@ -84,9 +78,10 @@ def rollout_fno_all_regions(
             ], axis=0).astype(np.float32)
 
             x_t = torch.tensor(x, dtype=torch.float32, device=device).unsqueeze(0)
-            T_next_norm = model(x_t).squeeze(0).squeeze(0).cpu().numpy()
+            dT_norm = model(x_t).squeeze(0).squeeze(0).cpu().numpy()
 
-            T_next    = T_next_norm * dataset.T_std + dataset.T_mean
+            dT        = dT_norm * dataset.dT_std + dataset.dT_mean
+            T_next    = T_current + dT
             T_current = np.clip(T_next, T_min_region, T_max_region).astype(np.float64)
             T_rollout[step + 1] = T_current.astype(np.float32)
 

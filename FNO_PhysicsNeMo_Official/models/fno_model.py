@@ -107,7 +107,7 @@ class HeatTreatmentFNO(nn.Module):
             self.fno = _PhysicsNeMoFNO(
                 in_channels        = cfg.fno_in_channels,
                 out_channels       = cfg.fno_out_channels,
-                num_fno_modes      = cfg.fno_modes,
+                num_fno_modes      = [cfg.fno_modes],
                 num_fno_layers     = cfg.fno_layers,
                 latent_channels    = cfg.fno_latent,
                 decoder_layers     = cfg.fno_decoder_layers,
