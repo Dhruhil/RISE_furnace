@@ -30,3 +30,16 @@ __pycache__/
 
 # ── Logs ─────────────────────────────────────────────────────────────────────
 *.log
+
+# ── New 16 cases dataset (too large for git) ──────────────────────────────────
+New_16_Datasets/
+
+# ── Standalone build script (replaced by Dataset_creation pipeline) ───────────
+build_all_regions_dataset.py
+
+# ── Data and evaluation folders ───────────────────────────────────────────────
+data/
+evaluation/
+
+# ── HDF5 dataset files ───────────────────────────────────────────────────────
+*.h5
