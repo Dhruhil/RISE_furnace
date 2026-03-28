@@ -17,7 +17,11 @@ This pipeline uses **two Docker containers**:
 Flow:
 1. **Generate** parameterised OpenFOAM cases using Latin Hypercube Sampling
 2. **Run** simulations inside the OpenFOAM container
-3. **Extract** temperature fields and build a normalised HDF5 dataset inside the PhysicsNeMo container
+3. **Extract** temperature fields and build normalised HDF5 datasets inside the PhysicsNeMo container
+
+Two dataset formats are produced:
+- **`dataset_cylinder_features.h5`** — steel cylinder only, flat feature matrix (for early PINN experiments)
+- **`dataset_all_regions.h5`** — all 12 furnace regions, per-case hierarchical format (for GNN MeshGraphNet & FNO models)
 
 ---
 
@@ -169,6 +173,9 @@ Monitor progress:
 tail -f /home/openfoam/rise_furnace/Testing_Create_Dataset/parallel_logs/*.log
 ```
 
+> The run script executes `Allmesh`, `Allrun`, and `foamToVTK -allRegions` for each case.
+> The VTK output (with all regions) is required for Step 5.
+
 ---
 
 ## Container 2 — PhysicsNeMo (Dataset Creation)
@@ -205,7 +212,7 @@ cd /workspace/rise_furnace/Dataset_creation
 pip install python-dotenv   # everything else is pre-installed in PhysicsNeMo
 ```
 
-### Step 4 — Build ML dataset
+### Step 4 — Build steel-only dataset
 
 ```bash
 cd /workspace/rise_furnace/Dataset_creation
@@ -215,7 +222,40 @@ make create-dataset
 Output:
 ```
 Testing_Create_Dataset/
-└── dataset_cylinder_features.h5    ← normalised HDF5 dataset for ML training
+└── dataset_cylinder_features.h5    ← steel cylinder only, flat feature matrix
+```
+
+### Step 5 — Build all-regions dataset
+
+```bash
+make create-all-regions-dataset
+```
+
+Output:
+```
+Testing_Create_Dataset/
+└── dataset_all_regions.h5          ← all 12 regions, for GNN & FNO models
+```
+
+This reads VTK output from all cases and extracts temperature fields for all 12 furnace regions:
+`steel_cylinder`, `inner_box`, `heater_1`–`heater_8`, `brick_heater`, `outer_box`.
+
+### Step 6 — Merge datasets (optional)
+
+If you have multiple batches of cases (e.g. 50 original + 16 new), merge their all-regions datasets:
+
+```bash
+python -m scripts.merge_all_regions_datasets \
+    /path/to/dataset_all_regions_50cases.h5 \
+    /path/to/dataset_all_regions_16new.h5 \
+    --output /path/to/dataset_all_regions_66cases.h5
+```
+
+Or using make:
+```bash
+make merge-all-regions-datasets \
+    INPUTS="/path/to/old.h5 /path/to/new.h5" \
+    OUTPUT="/path/to/merged.h5"
 ```
 
 ---
@@ -239,16 +279,24 @@ Dataset_creation/
 ├── pyproject.toml
 ├── configs/
 │   ├── defaults.py         # PipelineConfig — reads from .env
-│   └── parameters.py       # LHS parameter ranges
+│   ├── furnace.py          # Furnace geometry constants
+│   └── parameters.py       # LHS parameter ranges + feature columns
 ├── scripts/
-│   ├── create_cases.py     # Step 1: generate cases
-│   ├── validate_cases.py   # Step 2: validate
-│   └── create_dataset.py   # Step 4: build dataset
+│   ├── create_cases.py              # Step 1: generate cases
+│   ├── validate_cases.py            # Step 2: validate
+│   ├── create_dataset.py            # Step 4: build steel-only dataset
+│   ├── create_all_regions_dataset.py # Step 5: build all-regions dataset
+│   └── merge_all_regions_datasets.py # Step 6: merge multiple .h5 files
 ├── src/
-│   ├── core/               # Case builder, manifest
-│   ├── geometry/           # Geometry patcher
-│   ├── openfoam/           # OpenFOAM file writers
+│   ├── core/               # Case builder, dataset builder, manifest
+│   ├── geometry/           # .geo patcher, geometry validator
+│   ├── openfoam/           # Allmesh writer, heater patcher, thermo writer
 │   ├── sampling/           # Latin Hypercube Sampling
+│   ├── dataset/            # Feature matrix, normaliser, HDF5 writer
+│   ├── vtk_io/
+│   │   ├── reader.py              # VTK reader — steel cylinder only
+│   │   ├── all_regions_reader.py  # VTK reader — all 12 regions
+│   │   └── hdf5_cache.py         # Per-case HDF5 cache
 │   └── utils/              # Logging, naming, scripts
 └── tests/
 ```
@@ -259,12 +307,61 @@ Dataset_creation/
 
 | Command | Description |
 |---|---|
-| `make create-cases` | Generate OpenFOAM parameter study cases |
-| `make validate` | Validate generated cases before running |
-| `make create-dataset` | Build ML training HDF5 dataset |
+| `make create-cases` | Step 1: Generate OpenFOAM parameter study cases |
+| `make validate` | Step 2: Validate generated cases before running |
+| `make create-dataset` | Step 4: Build steel-only HDF5 dataset |
+| `make create-all-regions-dataset` | Step 5: Build all-regions HDF5 dataset |
+| `make merge-all-regions-datasets` | Step 6: Merge multiple all-regions .h5 files |
 | `make clean` | Remove Python cache files |
 | `make test` | Run test suite |
 | `make lint` | Run ruff linter |
+
+---
+
+## Dataset Formats
+
+### `dataset_cylinder_features.h5` (Step 4 — steel only)
+
+Used by: early PINN experiments
+
+| Key | Shape | Description |
+|---|---|---|
+| `X_norm` | `(N, 15)` | Normalised input features |
+| `Y_norm` | `(N, 1)` | Normalised temperature |
+| `X_mean`, `X_std` | `(15,)` | Normalisation parameters |
+| `Y_mean`, `Y_std` | scalar | Normalisation parameters |
+| `sim_start_indices` | `(n_sims,)` | Row boundaries per simulation |
+
+Feature columns: `x, y, z, t, T_set, cx, cy, cz, radius, height, volume, mass, kappa, Cp, rho`
+
+### `dataset_all_regions.h5` (Step 5 — all regions)
+
+Used by: GNN MeshGraphNet, FNO
+
+```
+attrs: n_cases, regions (JSON list of 12 region names)
+case_000/
+    attrs: name, T_set
+    times: (401,)
+    steel_cylinder/
+        coords: (2310, 3)
+        T:      (401, 2310)
+    inner_box/
+        coords: (5037, 3)
+        T:      (401, 5037)
+    heater_1/
+        coords: (450, 3)
+        T:      (401, 450)
+    ... (heater_2 through heater_8)
+    brick_heater/
+        coords: (322, 3)
+        T:      (401, 322)
+    outer_box/
+        coords: (2379, 3)
+        T:      (401, 2379)
+case_001/
+    ...
+```
 
 ---
 
@@ -295,4 +392,12 @@ docker run -it --user root -v ... openfoam-python bash
 ```bash
 # Confirm .venv is inside the mounted volume, not container-only storage
 ls /home/openfoam/rise_furnace/Dataset_creation/.venv
+```
+
+**Step 5: "No matching regions found"**
+```bash
+# Check that foamToVTK -allRegions ran successfully
+ls /path/to/case001/VTK/
+# Should contain: .series file, .vtm files, and region folders
+# (steel_cylinder/, inner_box/, heater_1/, etc.)
 ```

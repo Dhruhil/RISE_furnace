@@ -1,1 +1,12 @@
+# Environment config (contains local paths)
+.env
+
+# Python virtual environment
 .venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+openfoam_dataset_pipeline.egg-info
