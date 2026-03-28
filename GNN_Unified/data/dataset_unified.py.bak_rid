@@ -13,18 +13,10 @@ from scipy.spatial import cKDTree
 import h5py
 
 REGION_IDS = {
-    "steel_cylinder": 0,
-    "inner_box":      1,
-    "heater_1":       2,
-    "heater_2":       3,
-    "heater_3":       4,
-    "heater_4":       5,
-    "heater_5":       6,
-    "heater_6":       7,
-    "heater_7":       8,
-    "heater_8":       9,
-    "brick_heater":   10,
-    "outer_box":      11,
+    "steel_cylinder": 0, "inner_box": 1, "outer_box": 2,
+    "heater_1": 3, "heater_2": 4, "heater_3": 5, "heater_4": 6,
+    "heater_5": 7, "heater_6": 8, "heater_7": 9, "heater_8": 10,
+    "brick_heater": 11,
 }
 
 HEATER_REGIONS = {
@@ -167,39 +159,18 @@ class UnifiedDataset(torch.utils.data.Dataset):
                 for i in range(n):
                     for j_local in range(1, k + 1):
                         j = idxs[i, j_local]
+                        src_list.append(offset + i)
+                        dst_list.append(offset + j)
                         diff = coords[j] - coords[i]
                         dist = np.linalg.norm(diff)
-                        # Forward edge + reverse (bidirectional) + edge type 0=intra
-                        src_list.extend([offset + i, offset + j])
-                        dst_list.extend([offset + j, offset + i])
-                        eattr_list.extend([
-                            [diff[0], diff[1], diff[2], dist, 0.0],
-                            [-diff[0], -diff[1], -diff[2], dist, 0.0],
-                        ])
+                        eattr_list.append([diff[0], diff[1], diff[2], dist])
 
-            # Inter-region boundary edges — ONLY physically adjacent pairs
-            # From .geo: heaters+cylinder inside inner_box, inner_box inside outer_box
-            VALID_ADJACENCY = {
-                frozenset({"heater_1", "inner_box"}),
-                frozenset({"heater_2", "inner_box"}),
-                frozenset({"heater_3", "inner_box"}),
-                frozenset({"heater_4", "inner_box"}),
-                frozenset({"heater_5", "inner_box"}),
-                frozenset({"heater_6", "inner_box"}),
-                frozenset({"heater_7", "inner_box"}),
-                frozenset({"heater_8", "inner_box"}),
-                frozenset({"brick_heater", "inner_box"}),
-                frozenset({"steel_cylinder", "inner_box"}),
-                frozenset({"inner_box", "outer_box"}),
-                frozenset({"brick_heater", "outer_box"}),
-            }
+            # Inter-region boundary edges (connect close nodes across regions)
             region_list = list(sim["region_data"].keys())
             for r1_idx in range(len(region_list)):
                 for r2_idx in range(r1_idx + 1, len(region_list)):
                     r1 = region_list[r1_idx]
                     r2 = region_list[r2_idx]
-                    if frozenset({r1, r2}) not in VALID_ADJACENCY:
-                        continue
                     c1 = sim["region_data"][r1]["coords"]
                     c2 = sim["region_data"][r2]["coords"]
                     o1 = sim["region_data"][r1]["offset"]
@@ -217,8 +188,8 @@ class UnifiedDataset(torch.utils.data.Dataset):
                         src_list.extend([o1 + i, o2 + j])
                         dst_list.extend([o2 + j, o1 + i])
                         eattr_list.extend([
-                            [diff[0], diff[1], diff[2], dist, 1.0],
-                            [-diff[0], -diff[1], -diff[2], dist, 1.0],
+                            [diff[0], diff[1], diff[2], dist],
+                            [-diff[0], -diff[1], -diff[2], dist],
                         ])
 
             edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
@@ -303,9 +274,9 @@ class UnifiedDataset(torch.utils.data.Dataset):
         ]).astype(np.float32)
 
         # Targets: delta_T normalised
-        dT1 = ((T_tp1 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
-        dT2 = ((T_tp2 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
-        dT3 = ((T_tp3 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
+        dT1 = ((T_tp1 - T_t - self.dT_mean) / self.dT_std).reshape(-1, 1).astype(np.float32)
+        dT2 = ((T_tp2 - T_tp1 - self.dT_mean) / self.dT_std).reshape(-1, 1).astype(np.float32)
+        dT3 = ((T_tp3 - T_tp2 - self.dT_mean) / self.dT_std).reshape(-1, 1).astype(np.float32)
 
         # Add noise during training
         if self.split == "train":

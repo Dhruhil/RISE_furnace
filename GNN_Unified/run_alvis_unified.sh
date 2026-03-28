@@ -11,14 +11,15 @@
 #SBATCH --cpus-per-task=16
 
 mkdir -p /mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs
-mkdir -p /mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/checkpoints
+mkdir -p /mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/checkpoints_unified
+
 cd /mimer/NOBACKUP/groups/revar/GNN_Unified
 
-echo "=== UNIFIED GNN TRAINING ==="
+echo "=== UNIFIED GNN — T_next, KNN=10, Layers=6 ==="
 echo "=== Start: $(date) ==="
 
 apptainer exec --nv \
   /mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif \
-  python -u train_unified.py --epochs 50 --lr 1e-3 --batch 1
+  python -u train_unified.py --epochs 80 --lr 1e-3 --batch 4
 
 echo "=== DONE: $(date) ==="

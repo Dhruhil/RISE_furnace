@@ -13,18 +13,10 @@ from scipy.spatial import cKDTree
 import h5py
 
 REGION_IDS = {
-    "steel_cylinder": 0,
-    "inner_box":      1,
-    "heater_1":       2,
-    "heater_2":       3,
-    "heater_3":       4,
-    "heater_4":       5,
-    "heater_5":       6,
-    "heater_6":       7,
-    "heater_7":       8,
-    "heater_8":       9,
-    "brick_heater":   10,
-    "outer_box":      11,
+    "steel_cylinder": 0, "inner_box": 1, "outer_box": 2,
+    "heater_1": 3, "heater_2": 4, "heater_3": 5, "heater_4": 6,
+    "heater_5": 7, "heater_6": 8, "heater_7": 9, "heater_8": 10,
+    "brick_heater": 11,
 }
 
 HEATER_REGIONS = {
@@ -81,17 +73,6 @@ class UnifiedDataset(torch.utils.data.Dataset):
                     node_offsets[region] = offset
                     offset += n_nodes
 
-                cyl_params = {
-                    "cx":     float(grp.attrs.get("cx", 0.0)),
-                    "cy":     float(grp.attrs.get("cy", 0.18)),
-                    "cz":     float(grp.attrs.get("cz", 0.195)),
-                    "radius": float(grp.attrs.get("radius", 0.05)),
-                    "height": float(grp.attrs.get("height", 0.10)),
-                    "kappa":  float(grp.attrs.get("kappa", 60.0)),
-                    "Cp":     float(grp.attrs.get("Cp", 450.0)),
-                    "rho":    float(grp.attrs.get("rho", 7800.0)),
-                }
-
                 self._simulations.append({
                     "T_set": T_set,
                     "times": times,
@@ -100,7 +81,6 @@ class UnifiedDataset(torch.utils.data.Dataset):
                     "all_coords": np.concatenate(all_coords),
                     "all_region_ids": np.concatenate(all_region_ids),
                     "total_nodes": offset,
-                    **cyl_params,
                 })
 
         n_sims = len(self._simulations)
@@ -139,7 +119,7 @@ class UnifiedDataset(torch.utils.data.Dataset):
             sim = self._simulations[sim_i]
             n_t = sim["n_times"] - 1
             t_max = min(n_t, cfg.n_train_steps) if split_mode == "training" else n_t
-            for t_i in range(20, t_max - 3):  # FIX: was -2, needs -3 for y3  # -2 for pushforward
+            for t_i in range(20, t_max - 2):  # -2 for pushforward
                 self._index.append((sim_i, t_i))
 
         # Build unified graphs (once per simulation)
@@ -167,39 +147,18 @@ class UnifiedDataset(torch.utils.data.Dataset):
                 for i in range(n):
                     for j_local in range(1, k + 1):
                         j = idxs[i, j_local]
+                        src_list.append(offset + i)
+                        dst_list.append(offset + j)
                         diff = coords[j] - coords[i]
                         dist = np.linalg.norm(diff)
-                        # Forward edge + reverse (bidirectional) + edge type 0=intra
-                        src_list.extend([offset + i, offset + j])
-                        dst_list.extend([offset + j, offset + i])
-                        eattr_list.extend([
-                            [diff[0], diff[1], diff[2], dist, 0.0],
-                            [-diff[0], -diff[1], -diff[2], dist, 0.0],
-                        ])
+                        eattr_list.append([diff[0], diff[1], diff[2], dist])
 
-            # Inter-region boundary edges — ONLY physically adjacent pairs
-            # From .geo: heaters+cylinder inside inner_box, inner_box inside outer_box
-            VALID_ADJACENCY = {
-                frozenset({"heater_1", "inner_box"}),
-                frozenset({"heater_2", "inner_box"}),
-                frozenset({"heater_3", "inner_box"}),
-                frozenset({"heater_4", "inner_box"}),
-                frozenset({"heater_5", "inner_box"}),
-                frozenset({"heater_6", "inner_box"}),
-                frozenset({"heater_7", "inner_box"}),
-                frozenset({"heater_8", "inner_box"}),
-                frozenset({"brick_heater", "inner_box"}),
-                frozenset({"steel_cylinder", "inner_box"}),
-                frozenset({"inner_box", "outer_box"}),
-                frozenset({"brick_heater", "outer_box"}),
-            }
+            # Inter-region boundary edges (connect close nodes across regions)
             region_list = list(sim["region_data"].keys())
             for r1_idx in range(len(region_list)):
                 for r2_idx in range(r1_idx + 1, len(region_list)):
                     r1 = region_list[r1_idx]
                     r2 = region_list[r2_idx]
-                    if frozenset({r1, r2}) not in VALID_ADJACENCY:
-                        continue
                     c1 = sim["region_data"][r1]["coords"]
                     c2 = sim["region_data"][r2]["coords"]
                     o1 = sim["region_data"][r1]["offset"]
@@ -217,18 +176,12 @@ class UnifiedDataset(torch.utils.data.Dataset):
                         src_list.extend([o1 + i, o2 + j])
                         dst_list.extend([o2 + j, o1 + i])
                         eattr_list.extend([
-                            [diff[0], diff[1], diff[2], dist, 1.0],
-                            [-diff[0], -diff[1], -diff[2], dist, 1.0],
+                            [diff[0], diff[1], diff[2], dist],
+                            [-diff[0], -diff[1], -diff[2], dist],
                         ])
 
             edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
             edge_attr = torch.tensor(eattr_list, dtype=torch.float32)
-
-            # FIX: Normalise edge distances for training stability
-            if edge_attr.shape[0] > 0:
-                mean_dist = edge_attr[:, 3].mean().clamp(min=1e-8)
-                edge_attr[:, :3] = edge_attr[:, :3] / mean_dist
-                edge_attr[:, 3] = edge_attr[:, 3] / mean_dist
             self._graphs[sim_i] = (edge_index, edge_attr)
 
             n_boundary = sum(1 for s, d in zip(src_list, dst_list)
@@ -274,38 +227,20 @@ class UnifiedDataset(torch.utils.data.Dataset):
         Tset_norm = (T_set - self.T_mean) / self.T_std
         t_norm = t_val / 4000.0
 
-        # Compute is_heater for node features
-        is_heater_feat = np.zeros(total, dtype=np.float32)
-        for region, rdata in sim["region_data"].items():
-            if region in HEATER_REGIONS:
-                o = rdata["offset"]
-                n = rdata["n_cells"]
-                is_heater_feat[o:o+n] = 1.0
-
-        # ALL 16 node features — future-proof for varying cx/cz/radius/height
         node_feats = np.column_stack([
-            all_coords[:, 0],                                          # [0]  x
-            all_coords[:, 1],                                          # [1]  y
-            all_coords[:, 2],                                          # [2]  z
-            T_norm,                                                    # [3]  T_current
-            np.full(total, Tset_norm, dtype=np.float32),               # [4]  T_set
-            all_rids / 11.0,                                           # [5]  region_id
-            np.full(total, t_norm, dtype=np.float32),                  # [6]  time
-            is_heater_feat,                                            # [7]  is_heater
-            np.full(total, sim["cx"] / 0.206, dtype=np.float32),       # [8]  cx
-            np.full(total, sim["cy"] / 0.36, dtype=np.float32),        # [9]  cy
-            np.full(total, sim["cz"] / 0.39, dtype=np.float32),        # [10] cz
-            np.full(total, sim["radius"] / 0.10, dtype=np.float32),    # [11] radius
-            np.full(total, sim["height"] / 0.20, dtype=np.float32),    # [12] height
-            np.full(total, sim["kappa"] / 100.0, dtype=np.float32),    # [13] kappa
-            np.full(total, sim["Cp"] / 1000.0, dtype=np.float32),      # [14] Cp
-            np.full(total, sim["rho"] / 10000.0, dtype=np.float32),    # [15] rho
+            all_coords[:, 0],
+            all_coords[:, 1],
+            all_coords[:, 2],
+            T_norm,
+            np.full(total, Tset_norm, dtype=np.float32),
+            all_rids / 11.0,
+            np.full(total, t_norm, dtype=np.float32),
         ]).astype(np.float32)
 
         # Targets: delta_T normalised
-        dT1 = ((T_tp1 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
-        dT2 = ((T_tp2 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
-        dT3 = ((T_tp3 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
+        dT1 = ((T_tp1 - T_t - self.dT_mean) / self.dT_std).reshape(-1, 1).astype(np.float32)
+        dT2 = ((T_tp2 - T_tp1 - self.dT_mean) / self.dT_std).reshape(-1, 1).astype(np.float32)
+        dT3 = ((T_tp3 - T_tp2 - self.dT_mean) / self.dT_std).reshape(-1, 1).astype(np.float32)
 
         # Add noise during training
         if self.split == "train":

@@ -1,75 +1,104 @@
 """
-Unified Multi-Region GNN Training with Pushforward + Physics.
-All 12 regions in ONE graph — heat flows between regions.
-Master's Thesis: Digital Twin Modeling of Heat Treatment
+Unified Multi-Region GNN — Final Training Script.
+All fixes applied: curriculum, warmup, corrected physics, equilibrium.
 """
 from __future__ import annotations
-import sys, time, math, argparse
+import sys, time, argparse
 from pathlib import Path
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 
-sys.path.insert(0, "/mimer/NOBACKUP/groups/revar/GNN_PhysicsNeMo_Official")
-sys.path.insert(0, ".")
+sys.path.insert(0, str(Path(__file__).parent))
 
 from configs.base_config import CONFIG, BaseConfig
 from models.meshgraphnet import HeatTreatmentGNN
 from utils.checkpoint import CheckpointManager
 from utils.metrics import compute_metrics, within_tolerance
-
-import importlib.util
-spec = importlib.util.spec_from_file_location(
-    "dataset_unified",
-    "/mimer/NOBACKUP/groups/revar/GNN_Unified/data/dataset_unified.py")
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-UnifiedDataset = mod.UnifiedDataset
+from data.dataset_unified import UnifiedDataset
 
 SIGMA = 5.67e-8
 
 
-def physics_loss_unified(pred, batch, dT_std, dT_mean, device):
-    """Physics constraints for unified graph.
-    1. Conduction: graph Laplacian (now includes cross-region edges!)
-    2. Convection: T <= T_set
-    3. Radiation: Stefan-Boltzmann
+# ── Curriculum ────────────────────────────────────────────────────────
+
+def get_physics_lambda(epoch, n_epochs):
+    warmup_end = int(n_epochs * 0.3)
+    if epoch <= warmup_end:
+        return 0.0
+    return 0.03 * (epoch - warmup_end) / (n_epochs - warmup_end)
+
+def get_pushforward_weight(epoch, n_epochs):
+    warmup_end = int(n_epochs * 0.15)
+    if epoch <= warmup_end:
+        return 0.0
+    return 0.5 * (epoch - warmup_end) / (n_epochs - warmup_end)
+
+def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
+    if epoch <= warmup_epochs:
+        return base_lr * (0.1 + 0.9 * epoch / warmup_epochs)
+    return base_lr
+
+
+# ── Corrected physics loss ────────────────────────────────────────────
+
+def physics_loss_unified(pred, batch, dT_std, dT_mean):
+    """
+    Corrected physics for furnace heat treatment.
+    Conduction: spatial smoothness via graph Laplacian (scatter on dst)
+    Convection: T <= T_set + must rise during heating
+    Radiation: sign-based penalty at non-heater nodes
+    Equilibrium: dT -> 0 near T_set
     """
     dt = 10.0
-    dT_pred = pred.squeeze(-1) * dT_std + dT_mean
+    device = pred.device
+
+    # pred is normalised T_next directly
+    T_next = pred.squeeze(-1) * dT_std + dT_mean  # dT_std/mean used as T_std/mean here
     T_now = batch.T_current.to(device)
-    T_next = T_now + dT_pred
+    dT_pred = T_next - T_now
     T_set = batch.T_set_raw.to(device)
-
-    # Convection: non-heater nodes must not exceed T_set
     non_heater = ~batch.is_heater.bool()
-    overshoot = torch.nn.functional.relu(T_next - T_set) * non_heater.float()
-    L_conv = (overshoot / T_set.clamp(min=300)).pow(2).mean()
+    dT_dt = dT_pred / dt
 
-    # Conduction via graph Laplacian (cross-region heat flow!)
+    # 1. CONDUCTION (0.50) — Laplacian smoothness
     src, dst = batch.edge_index[0], batch.edge_index[1]
     N = T_now.shape[0]
     T_diff = T_now[dst] - T_now[src]
     lap_T = torch.zeros(N, device=device, dtype=T_now.dtype)
     degree = torch.zeros(N, device=device, dtype=T_now.dtype)
-    lap_T.scatter_add_(0, src, T_diff)
-    degree.scatter_add_(0, src, torch.ones_like(T_diff))
+    lap_T.scatter_add_(0, dst, T_diff)
+    degree.scatter_add_(0, dst, torch.ones_like(T_diff))
     lap_T = lap_T / degree.clamp(min=1.0)
-    dT_dt = dT_pred / dt
-    scale = dT_dt.abs().mean().clamp(min=1e-6)
-    L_cond = ((dT_dt - lap_T * 0.001) / scale).pow(2).mean()
+    L_cond = ((dT_dt - 0.1 * lap_T) * non_heater.float()).pow(2).mean()
 
-    # Radiation: Stefan-Boltzmann (non-heater nodes only)
-    Q_rad = 0.8 * SIGMA * (T_set.pow(4) - T_now.pow(4))
-    dT_rad = Q_rad / (7800.0 * 450.0 * 0.01)
-    scale_r = dT_rad.abs().mean().clamp(min=1e-8)
-    L_rad = ((dT_dt - dT_rad) / scale_r).pow(2).mean()
+    # 2. CONVECTION (0.30) — overshoot + heating direction
+    overshoot = F.relu(T_next - T_set) * non_heater.float()
+    L_overshoot = (overshoot / T_set.clamp(min=300)).pow(2).mean()
+    heating = (T_now < T_set * 0.99).float() * non_heater.float()
+    wrong_dir = heating * F.relu(T_now - T_next)
+    L_stagnation = (wrong_dir / T_set.clamp(min=300)).pow(2).mean()
+    L_conv = L_overshoot + 0.5 * L_stagnation
 
-    return 0.5 * L_conv + 0.3 * L_cond + 0.2 * L_rad
+    # 3. RADIATION (0.15) — sign-based, non-heater only
+    T_gap = (T_set - T_now).clamp(min=0) * non_heater.float()
+    expected_sign = torch.sign(T_gap)
+    actual_sign = torch.sign(dT_dt)
+    sign_mismatch = F.relu(-expected_sign * actual_sign) * non_heater.float()
+    L_rad = (sign_mismatch * T_gap / T_set.clamp(min=300)).pow(2).mean()
+
+    # 4. EQUILIBRIUM (0.05) — dT -> 0 near T_set
+    gap = (T_set - T_now).abs()
+    near_eq = torch.exp(-gap / 20.0) * non_heater.float()
+    L_eq = (dT_pred * near_eq).pow(2).mean() / (dT_std ** 2 + 1e-8)
+
+    return 0.5 * L_cond + 0.3 * L_conv + 0.15 * L_rad + 0.05 * L_eq
 
 
-def train_one_epoch(model, loader, optimizer, device, cfg, lam=0.0, phys_norm=1.0):
-    """3-step pushforward + physics on unified graph."""
+# ── Training ──────────────────────────────────────────────────────────
+
+def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
     model.train()
     total_loss, total_data, total_phys, n = 0.0, 0.0, 0.0, 0
     dT_std = loader.dataset.dT_std
@@ -82,37 +111,31 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam=0.0, phys_norm=1.
         optimizer.zero_grad()
         heater_mask = batch.is_heater.unsqueeze(-1).bool()
 
-        # Step 1: predict from ground truth
         pred1 = model(batch)
         pred1 = pred1.masked_fill(heater_mask, 0.0)
         target1 = batch.y.masked_fill(heater_mask, 0.0)
         loss1 = F.mse_loss(pred1, target1)
 
-        # Step 2: feed own prediction
-        dT_pred1 = pred1.squeeze(-1) * dT_std + dT_mean
-        T_pred1 = batch.T_current + dT_pred1
-        T_pred1 = torch.where(batch.is_heater.bool(), batch.T_set_raw, T_pred1)
+        loss_data = loss1
+        if w2 > 1e-6:
+            # pred1 is normalised T_next directly
+            T_pred1 = pred1.squeeze(-1) * T_std_ds + T_mean
+            T_pred1 = torch.where(batch.is_heater.bool(), batch.T_set_raw, T_pred1)
+            batch2 = batch.clone()
+            batch2.x = batch.x.clone()
+            batch2.x[:, 3] = (T_pred1 - T_mean) / T_std_ds
+            batch2.x[:, 6] = batch.x[:, 6] + 10.0 / 4000.0
+            batch2.T_current = T_pred1
+            pred2 = model(batch2)
+            pred2 = pred2.masked_fill(heater_mask, 0.0)
+            target2 = batch.y2.masked_fill(heater_mask, 0.0)
+            loss2 = F.mse_loss(pred2, target2)
+            loss_data = loss1 + w2 * loss2
 
-        batch2 = batch.clone()
-        batch2.x = batch.x.clone()
-        batch2.x[:, 3] = (T_pred1 - T_mean) / (T_std_ds + 1e-8)
-        batch2.x[:, 6] = batch.x[:, 6] + 1.0 / 400.0
-        batch2.T_current = T_pred1
-
-        pred2 = model(batch2)
-        pred2 = pred2.masked_fill(heater_mask, 0.0)
-        target2 = batch.y2.masked_fill(heater_mask, 0.0)
-        loss2 = F.mse_loss(pred2, target2)
-
-        # Combined data loss (2-step pushforward)
-        loss_data = 1.0 * loss1 + 0.5 * loss2
-
-        # Physics loss (on step 1)
-        if lam > 1e-10:
-            L_phys = physics_loss_unified(
-                pred1, batch, dT_std, dT_mean, str(device))
+        if lam > 1e-6:
+            L_phys = physics_loss_unified(pred1, batch, dT_std, dT_mean)
             total_phys += L_phys.item()
-            loss = (1.0 - lam) * loss_data + lam * L_phys / (phys_norm + 1e-8)
+            loss = (1.0 - lam) * loss_data + lam * L_phys
         else:
             loss = loss_data
 
@@ -124,22 +147,22 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam=0.0, phys_norm=1.
         total_data += loss1.item()
         n += 1
 
-    tr_data = total_data / max(n, 1)
-    tr_phys = total_phys / max(n, 1)
-    if tr_phys > 1e-8:
-        phys_norm = 0.9 * phys_norm + 0.1 * (tr_phys / (tr_data + 1e-8))
-    return total_loss / max(n, 1), phys_norm
+    return total_loss / max(n, 1), total_data / max(n, 1), total_phys / max(n, 1)
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, lam=0.0, phys_norm=1.0):
-    """Single-step validation on unified graph."""
+def evaluate(model, loader, device, lam=0.0):
+    """Validation: reports both data-only loss and total (data+physics) loss."""
     model.eval()
-    total_loss, total_total, n = 0.0, 0.0, 0
+    total_data, total_phys, n = 0.0, 0.0, 0
     all_pred_K, all_true_K = [], []
+    T_mean = loader.dataset.T_mean
+    T_std_ds = loader.dataset.T_std
+    region_preds = {"steel": [], "air": [], "outer": []}
+    region_trues = {"steel": [], "air": [], "outer": []}
+    all_steel_pred, all_steel_true = [], []
     dT_std = loader.dataset.dT_std
     dT_mean = loader.dataset.dT_mean
-    import numpy as np
 
     for batch in loader:
         batch = batch.to(device)
@@ -147,27 +170,55 @@ def evaluate(model, loader, device, lam=0.0, phys_norm=1.0):
         heater_mask = batch.is_heater.unsqueeze(-1).bool()
         pred_masked = pred.masked_fill(heater_mask, 0.0)
         target_masked = batch.y.masked_fill(heater_mask, 0.0)
-        loss = F.mse_loss(pred_masked, target_masked)
-        total_loss += loss.item()
-        if lam > 1e-10:
-            L_phys = physics_loss_unified(pred, batch, dT_std, dT_mean, str(device))
-            total_total += ((1.0 - lam) * loss.item() + lam * L_phys.item() / (phys_norm + 1e-8))
-        else:
-            total_total += loss.item()
+        loss_data = F.mse_loss(pred_masked, target_masked)
+        total_data += loss_data.item()
+
+        if lam > 1e-6:
+            L_phys = physics_loss_unified(pred, batch, dT_std, dT_mean)
+            total_phys += L_phys.item()
         n += 1
 
         non_heater = ~batch.is_heater.bool()
-        dT_pred = pred.squeeze(-1) * dT_std + dT_mean
-        T_pred = batch.T_current + dT_pred
+        # Model predicts normalised T_next directly
+        T_pred = pred.squeeze(-1) * T_std_ds + T_mean
         T_true = batch.T_next
         all_pred_K.append(T_pred[non_heater].cpu().numpy())
         all_true_K.append(T_true[non_heater].cpu().numpy())
 
+        rid = batch.x[:, 5]
+        is_steel = (rid < 0.05) & non_heater
+        is_air   = (rid > 0.05) & (rid < 0.14)
+        is_outer = (rid > 0.95)
+        for name, mask in [("steel", is_steel), ("air", is_air), ("outer", is_outer)]:
+            if mask.any():
+                region_preds[name].append(T_pred[mask].cpu().numpy())
+                region_trues[name].append(T_true[mask].cpu().numpy())
+
+        rid = batch.x[:, 5]
+        is_steel = (rid < 0.05) & non_heater
+        is_air   = (rid > 0.05) & (rid < 0.14)
+        is_outer = (rid > 0.95)
+        for name, mask in [("steel", is_steel), ("air", is_air), ("outer", is_outer)]:
+            if mask.any():
+                region_preds[name].append(T_pred[mask].cpu().numpy())
+                region_trues[name].append(T_true[mask].cpu().numpy())
+
+        # Steel cylinder nodes: region_id = 0, normalised = 0/11 = 0.0
+        region_feat = batch.x[:, 5]  # region_id / 11
+        is_steel = (region_feat < 0.05) & non_heater  # region 0 = steel
+        if is_steel.any():
+            all_steel_pred.append(T_pred[is_steel].cpu().numpy())
+            all_steel_true.append(T_true[is_steel].cpu().numpy())
+
     all_pred_K = np.concatenate(all_pred_K)
     all_true_K = np.concatenate(all_true_K)
     m = compute_metrics(all_pred_K, all_true_K)
-    m["loss"] = total_loss / max(n, 1)
-    m["total_loss"] = total_total / max(n, 1)
+    avg_data = total_data / max(n, 1)
+    avg_phys = total_phys / max(n, 1)
+    m["loss_data"] = avg_data                                          # pure data MSE
+    m["loss_phys"] = avg_phys                                          # physics only
+    m["loss_total"] = (1 - lam) * avg_data + lam * avg_phys if lam > 1e-6 else avg_data  # combined
+    m["loss"] = avg_data                                               # model selection uses data-only
     m["within_5K"] = within_tolerance(all_pred_K, all_true_K, 5.0)
     return m
 
@@ -178,70 +229,156 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch", type=int, default=2)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--test", action="store_true", help="Run 1-batch sanity test")
     args = parser.parse_args()
 
     cfg = CONFIG
+    cfg.node_in_features = 16
     device = torch.device(
         args.device if args.device
         else ("cuda" if torch.cuda.is_available() else "cpu"))
 
     sep = "=" * 70
     print(f"\n{sep}")
-    print(f"  UNIFIED MULTI-REGION GNN — Pushforward + Physics")
-    print(f"  All 12 regions in ONE graph with cross-region edges")
+    print(f"  UNIFIED GNN — Predict T_next")
     print(f"  Device: {device}  Batch: {args.batch}  Epochs: {args.epochs}")
-    print(f"  Lambda: linear 0->1 | Physics: conv + cond + rad")
+    print(f"  node_in=16  edge_in={cfg.edge_in_features}  "
+          f"hidden={cfg.hidden_features}  layers={cfg.n_message_passing_layers}")
     print(f"{sep}\n")
 
     h5 = "dataset_all_regions.h5"
+    print("  Loading dataset...")
     train_ds = UnifiedDataset(h5, cfg, "train", "training")
     val_ds = UnifiedDataset(h5, cfg, "val", "training")
+
+    # Sanity test mode: just check 1 batch loads and forward pass works
+    if args.test:
+        print("\n  === SANITY TEST MODE ===")
+        loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)
+        batch = next(iter(loader))
+        print(f"  Batch loaded: x={batch.x.shape}, edge_index={batch.edge_index.shape}, "
+              f"edge_attr={batch.edge_attr.shape}")
+        print(f"  Node features: {batch.x.shape[1]} (expected 16)")
+        print(f"  Edge features: {batch.edge_attr.shape[1]} (expected 5)")
+        print(f"  Nodes: {batch.x.shape[0]}, Edges: {batch.edge_index.shape[1]}")
+        assert batch.x.shape[1] == 16, f"Expected 16 node features, got {batch.x.shape[1]}"
+        assert batch.edge_attr.shape[1] == 5, f"Expected 5 edge features, got {batch.edge_attr.shape[1]}"
+
+        model = HeatTreatmentGNN(cfg).to(device)
+        batch = batch.to(device)
+        with torch.no_grad():
+            out = model(batch)
+        print(f"  Forward pass OK: output={out.shape}")
+        print(f"  Output range: [{out.min().item():.4f}, {out.max().item():.4f}]")
+
+        # Test physics loss
+        dT_std = train_ds.dT_std
+        dT_mean = train_ds.dT_mean
+        L_phys = physics_loss_unified(out, batch, dT_std, dT_mean)
+        print(f"  Physics loss OK: {L_phys.item():.6f}")
+
+        # Test backward pass
+        loss = F.mse_loss(out, batch.y)
+        loss.backward()
+        print(f"  Backward pass OK: data_loss={loss.item():.6f}")
+
+        # Check graph structure
+        n_boundary = 0
+        rids = batch.region_ids if hasattr(batch, 'region_ids') else None
+        if rids is not None:
+            src_r = rids[batch.edge_index[0]]
+            dst_r = rids[batch.edge_index[1]]
+            n_boundary = (src_r != dst_r).sum().item()
+        print(f"  Cross-region edges: {n_boundary}")
+        print(f"  is_heater nodes: {batch.is_heater.sum().item():.0f} / {batch.x.shape[0]}")
+
+        print(f"\n  === ALL SANITY CHECKS PASSED ===")
+        print(f"  Ready to train: sbatch run_alvis_unified.sh")
+        return
+
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                                num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
                              num_workers=2)
 
-    cfg.node_in_features = 7
     model = HeatTreatmentGNN(cfg).to(device)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-                                  weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=10, factor=0.5, min_lr=1e-6)
+        optimizer, patience=15, factor=0.5, min_lr=1e-6)
     ckpt_mgr = CheckpointManager(
-        "/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/checkpoints")
+        str(Path(cfg.checkpoint_dir).parent / "checkpoints_unified"))
 
-    print(f"  {'Ep':>5} | {'TrLoss':>9} | {'VaLoss':>9} | "
-          f"{'MAE[K]':>7} | {'R2':>7} | {'W5K':>6} | {'lam':>6}")
-    print(f"  {'-'*65}")
+    print(f"  {'Ep':>4} | {'TrData':>9} | {'VaData':>9} | "
+          f"{'MAE':>5} | {'R2':>7} | {'W5K':>5} | {'lam':>5} | {'w2':>4} | "
+          f"{'Steel':>5} {'Air':>5} {'Outer':>5} | {'Time':>5}")
+    print(f"  {'-'*100}")
 
-    phys_norm = 1.0
     t0 = time.time()
+    n_ep = args.epochs
 
-    for epoch in range(1, args.epochs + 1):
-        lam = min(epoch / args.epochs, 0.3)  # max 30% physics
+    for epoch in range(1, n_ep + 1):
+        lam = get_physics_lambda(epoch, n_ep)
+        ep_start = time.time()
+        w2 = get_pushforward_weight(epoch, n_ep)
+        lr = get_warmup_lr(epoch, args.lr, warmup_epochs=5)
+        for pg in optimizer.param_groups:
+            pg['lr'] = lr
 
-        tr_loss, phys_norm = train_one_epoch(
-            model, train_loader, optimizer, device, cfg,
-            lam=lam, phys_norm=phys_norm)
+        tr_loss, tr_data, tr_phys = train_one_epoch(
+            model, train_loader, optimizer, device, cfg, lam=lam, w2=w2)
+        val_m = evaluate(model, val_loader, device, lam=lam)
 
-        val_m = evaluate(model, val_loader, device, lam=lam, phys_norm=phys_norm)
-        scheduler.step(val_m["loss"])
+        if epoch > 5:
+            scheduler.step(val_m["loss"])
+
         is_best = ckpt_mgr.update(model, optimizer, scheduler, epoch, val_m)
-
         if epoch % 10 == 0:
             ckpt_mgr.save_periodic(model, optimizer, scheduler, epoch, val_m)
 
-        lr = optimizer.param_groups[0]["lr"]
-        tag = "  < BEST" if is_best else ""
-        print(f"  {epoch:>5} | {tr_loss:>9.5f} | "
-              f"{val_m['total_loss']:>9.5f} | "
-              f"{val_m['mae']:>7.2f} | {val_m['r2']:>7.4f} | "
-              f"{val_m['within_5K']:>6.1f} | {lam:>6.3f}{tag}")
+        ep_time = time.time() - ep_start
+        tag = " *" if is_best else ""
+        print(f"  {epoch:>4} | {tr_loss:>9.5f} | {tr_data:>9.5f} | "
+              f"{tr_phys:>9.5f} | {val_m['loss_data']:>9.5f} | "
+              f"{val_m['loss_phys']:>9.5f} | {val_m['loss_total']:>9.5f} | "
+              f"{val_m['mae']:>6.2f} | {val_m['r2']:>7.4f} | "
+              f"{val_m['within_5K']:>5.1f} | {lam:>5.3f} | "
+              f"{w2:>4.2f} | {ep_time:>5.1f}s | "
+              f"steel={val_m.get('steel_mae',0):.2f}K{tag}")
 
     total_time = time.time() - t0
-    print(f"\n  Training done in {total_time/60:.1f} min")
+    print(f"\n  Training done in {total_time/60:.1f} min ({total_time/3600:.2f} hrs)")
     print(f"  Best MAE: {ckpt_mgr.best_mae:.3f}K (epoch {ckpt_mgr.best_epoch})")
+    print(f"  Avg epoch time: {total_time/n_ep:.1f}s")
+
+    # Inference speed test
+    print(f"\n  === INFERENCE SPEED TEST ===")
+    model.eval()
+    batch = next(iter(val_loader))
+    batch = batch.to(device)
+    with torch.no_grad():
+        for _ in range(10):
+            _ = model(batch)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_inf = time.time()
+    with torch.no_grad():
+        for _ in range(100):
+            _ = model(batch)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_inf = (time.time() - t_inf) / 100
+    n_timesteps = 400
+    t_full_rollout = t_inf * n_timesteps
+    print(f"  Single step inference: {t_inf*1000:.2f} ms")
+    print(f"  Full rollout (400 steps): {t_full_rollout:.2f}s")
+    print(f"  Nodes per graph: {batch.x.shape[0]}")
+    print(f"  Edges per graph: {batch.edge_index.shape[1]}")
+    print(f"")
+    print(f"  === SPEED COMPARISON (for thesis) ===")
+    print(f"  OpenFOAM (estimated):  ~2-4 hours per simulation")
+    print(f"  GNN single step:       {t_inf*1000:.2f} ms")
+    print(f"  GNN full rollout:      {t_full_rollout:.2f}s")
+    print(f"  Speedup vs OpenFOAM:   ~{3600*3/t_full_rollout:.0f}x")
 
 
 if __name__ == "__main__":

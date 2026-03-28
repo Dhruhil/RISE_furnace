@@ -1,193 +1,186 @@
 """
-Unified GNN Rollout Evaluation — Phase 1 (0-3200s) + Phase 2 (3200-4000s).
-Autoregressive rollout on unified multi-region graph.
+GNN Rollout Evaluation — per-region MAE for T_next prediction.
 """
 from __future__ import annotations
-import sys, json, argparse
+import sys, time, json
+from pathlib import Path
 import numpy as np
 import torch
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, "/mimer/NOBACKUP/groups/revar/GNN_PhysicsNeMo_Official")
 
 from configs.base_config import CONFIG
+from data.dataset_unified import UnifiedDataset, REGION_IDS, HEATER_REGIONS
 from models.meshgraphnet import HeatTreatmentGNN
-
-import importlib.util
-spec = importlib.util.spec_from_file_location(
-    "dataset_unified",
-    "/mimer/NOBACKUP/groups/revar/GNN_Unified/data/dataset_unified.py")
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-UnifiedDataset = mod.UnifiedDataset
-HEATER_REGIONS = mod.HEATER_REGIONS
-REGION_IDS = mod.REGION_IDS
+from torch_geometric.data import Data
 
 
-def rollout_unified(model, dataset, sim_i, device):
-    """Full autoregressive rollout on unified graph for one simulation."""
-    model.eval()
+def rollout_gnn(model, dataset, sim_i, device, start_t=20):
+    """Autoregressive rollout on unified graph."""
     sim = dataset._simulations[sim_i]
     edge_index, edge_attr = dataset._graphs[sim_i]
-    times = sim["times"]
+    total = sim["total_nodes"]
     T_set = sim["T_set"]
-    total_nodes = sim["total_nodes"]
-    all_coords = sim["all_coords"]
-    all_rids = sim["all_region_ids"]
-    # Compute is_heater from region data
-    all_is_heater = np.zeros(total_nodes, dtype=np.float32)
-    for region, rdata in sim["region_data"].items():
-        if region in HEATER_REGIONS:
-            o = rdata["offset"]
-            n = rdata["n_cells"]
-            all_is_heater[o:o+n] = 1.0
+    times = sim["times"]
 
-    dT_std = dataset.dT_std
-    dT_mean = dataset.dT_mean
-    T_mean = dataset.T_mean
-    T_std = dataset.T_std
-
-    t_start = 20
-    n_t = sim["n_times"]
-
-    # Initial temperature
-    T_current = np.zeros(total_nodes, dtype=np.float32)
+    n_times = len(times)
+    T_all = np.zeros((n_times, total), dtype=np.float32)
     for region, rdata in sim["region_data"].items():
         o = rdata["offset"]
         n = rdata["n_cells"]
-        T_current[o:o+n] = rdata["T_array"][t_start]
+        for t in range(n_times):
+            T_all[t, o:o+n] = rdata["T_array"][t]
 
-    results = {"phase1": {}, "phase2": {}}
+    T_cur = T_all[start_t].copy()
+    n_rollout = n_times - start_t
+    T_pred_all = np.zeros((n_rollout, total), dtype=np.float32)
+    T_pred_all[0] = T_cur
 
+    all_coords = sim["all_coords"]
+    all_rids = sim["all_region_ids"]
+    is_heater = np.array([1.0 if int(all_rids[j]) in HEATER_REGIONS else 0.0
+                          for j in range(total)], dtype=np.float32)
+
+    T_mean = dataset.T_mean
+    T_std = dataset.T_std
+
+    model.eval()
     with torch.no_grad():
-        for t_i in range(t_start, n_t - 1):
-            t_val = times[t_i]
+        for step in range(1, n_rollout):
+            t_idx = start_t + step
+            if t_idx >= n_times:
+                break
+            t_val = times[t_idx - 1]
 
-            # Build node features
-            T_norm = (T_current - T_mean) / (T_std + 1e-8)
-            Tset_norm = (T_set - T_mean) / (T_std + 1e-8)
+            T_norm = (T_cur - T_mean) / T_std
+            Tset_norm = (T_set - T_mean) / T_std
             t_norm = t_val / 4000.0
 
             node_feats = np.column_stack([
-                all_coords[:, 0],
-                all_coords[:, 1],
-                all_coords[:, 2],
+                all_coords[:, 0], all_coords[:, 1], all_coords[:, 2],
                 T_norm,
-                np.full(total_nodes, Tset_norm, dtype=np.float32),
+                np.full(total, Tset_norm, dtype=np.float32),
                 all_rids / 11.0,
-                np.full(total_nodes, t_norm, dtype=np.float32),
+                np.full(total, t_norm, dtype=np.float32),
+                is_heater,
+                np.full(total, sim.get("cx", 0.103) / 0.206, dtype=np.float32),
+                np.full(total, sim.get("cy", 0.18) / 0.36, dtype=np.float32),
+                np.full(total, sim.get("cz", 0.195) / 0.39, dtype=np.float32),
+                np.full(total, sim.get("radius", 0.05) / 0.10, dtype=np.float32),
+                np.full(total, sim.get("height", 0.10) / 0.20, dtype=np.float32),
+                np.full(total, sim.get("kappa", 55.0) / 100.0, dtype=np.float32),
+                np.full(total, sim.get("Cp", 500.0) / 1000.0, dtype=np.float32),
+                np.full(total, sim.get("rho", 7800.0) / 10000.0, dtype=np.float32),
             ]).astype(np.float32)
 
-            # Create batch
-            from torch_geometric.data import Data
-            data = Data(
+            batch = Data(
                 x=torch.tensor(node_feats, dtype=torch.float32),
                 edge_index=edge_index,
-                edge_attr=edge_attr.float(),
+                edge_attr=edge_attr,
             ).to(device)
 
-            # Predict
-            pred = model(data)
-            dT_pred = pred.squeeze(-1).cpu().numpy() * dT_std + dT_mean
+            pred = model(batch)
+            T_next = pred.squeeze(-1).cpu().numpy() * T_std + T_mean
 
-            # Update temperature
-            T_pred = T_current + dT_pred
+            heater_mask = is_heater > 0.5
+            if t_idx < n_times:
+                T_next[heater_mask] = T_all[t_idx][heater_mask]
 
-            # Clamp heaters to T_set
-            T_pred = np.where(all_is_heater > 0.5, T_set, T_pred)
+            T_pred_all[step] = T_next
+            T_cur = T_next.copy()
 
-            # Ground truth
-            T_true = np.zeros(total_nodes, dtype=np.float32)
-            for region, rdata in sim["region_data"].items():
-                o = rdata["offset"]
-                n = rdata["n_cells"]
-                T_true[o:o+n] = rdata["T_array"][t_i + 1]
-
-            # Per-region errors
-            phase = "phase1" if t_val <= 3200 else "phase2"
-            for region, rdata in sim["region_data"].items():
-                o = rdata["offset"]
-                n = rdata["n_cells"]
-                mae = np.abs(T_pred[o:o+n] - T_true[o:o+n]).mean()
-                if region not in results[phase]:
-                    results[phase][region] = []
-                results[phase][region].append(float(mae))
-
-            # Use prediction for next step
-            T_current = T_pred
-
-    return results
+    return T_pred_all, T_all[start_t:start_t + n_rollout]
 
 
 def main():
+    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=None)
-    parser.add_argument("--device", default=None)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--n_sims", type=int, default=5)
     args = parser.parse_args()
 
     cfg = CONFIG
-    cfg.node_in_features = 7
-    device = torch.device(
-        args.device if args.device
-        else ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    ckpt_path = args.checkpoint or "/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/checkpoints/best_model.pt"
-    print(f"\n  Loading unified GNN checkpoint: {ckpt_path}")
+    print(f"\n{'='*80}")
+    print(f"  GNN ROLLOUT EVALUATION — Per-Region Accuracy")
+    print(f"  Phase 1: 0-3200s | Phase 2: 3200-4000s")
+    print(f"{'='*80}\n")
 
-    model = HeatTreatmentGNN(cfg).to(device)
+    test_ds = UnifiedDataset(cfg.dataset_path, cfg, "test", "evaluation")
+
+    ckpt_path = "outputs/checkpoints_unified/best_model.pt"
+    print(f"  Loading model from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model_state"])
-    epoch = ckpt.get("epoch", 0)
-    mae = ckpt.get("metrics", {}).get("mae", 0)
-    print(f"  Loaded epoch {epoch}, val_MAE={mae:.3f}K")
+    model = HeatTreatmentGNN(cfg).to(device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
+    print(f"  Model loaded (epoch {ckpt.get('epoch', '?')})\n")
 
-    # Load test dataset
-    test_ds = UnifiedDataset(
-        "/mimer/NOBACKUP/groups/revar/GNN_Unified/dataset_all_regions.h5",
-        cfg, "test", "evaluation")
+    start_t = 20
+    n_train_steps = 320
+    all_results = {}
+    region_names = {v: k for k, v in REGION_IDS.items()}
 
-    sep = "=" * 70
-    print(f"\n{sep}")
-    print(f"  UNIFIED GNN ROLLOUT EVALUATION")
-    print(f"{sep}")
+    n_eval = min(args.n_sims, len(test_ds.sim_indices))
 
-    all_p1, all_p2 = {}, {}
-    for sim_i in test_ds.sim_indices:
-        results = rollout_unified(model, test_ds, sim_i, device)
+    for i, sim_i in enumerate(test_ds.sim_indices[:n_eval]):
+        sim = test_ds._simulations[sim_i]
+        all_rids = sim["all_region_ids"]
+        print(f"  Sim {sim_i} (T_set={sim['T_set']:.0f}K)")
+        print(f"  {'Region':>18} | {'Cells':>6} | {'P1 MAE':>8} | {'P2 MAE':>8}")
+        print(f"  {'-'*50}")
 
-        p1_mae = np.mean([np.mean(v) for v in results["phase1"].values()]) if results["phase1"] else 0
-        p2_mae = np.mean([np.mean(v) for v in results["phase2"].values()]) if results["phase2"] else 0
-        print(f"    Sim {sim_i:>3}  P1={p1_mae:.2f}K  P2={p2_mae:.2f}K")
+        t0 = time.time()
+        T_pred, T_true = rollout_gnn(model, test_ds, sim_i, device, start_t)
+        rt = time.time() - t0
 
-        for phase_name, phase_data in [("phase1", results["phase1"]), ("phase2", results["phase2"])]:
-            target = all_p1 if phase_name == "phase1" else all_p2
-            for region, maes in phase_data.items():
-                if region not in target:
-                    target[region] = []
-                target[region].extend(maes)
+        p1_end = min(n_train_steps - start_t, T_pred.shape[0])
+        metrics = {}
 
-    # Summary
-    print(f"\n{sep}")
-    print(f"  SUMMARY — Unified GNN Rollout")
-    print(f"{sep}")
+        for rid in range(12):
+            rname = region_names.get(rid, f"r{rid}")
+            mask = (all_rids == rid)
+            if mask.sum() == 0:
+                continue
+            is_h = rid in HEATER_REGIONS
+            p1 = float(np.mean(np.abs(T_pred[1:p1_end, mask] - T_true[1:p1_end, mask]))) if p1_end > 1 else 0
+            p2_data = T_pred[p1_end:, mask] - T_true[p1_end:, mask]
+            p2 = float(np.mean(np.abs(p2_data))) if p2_data.size > 0 else float('nan')
+            metrics[rname] = {"n_cells": int(mask.sum()), "p1_mae": p1, "p2_mae": p2, "is_heater": is_h}
 
-    overall_p1, overall_p2 = [], []
-    for region in sorted(set(list(all_p1.keys()) + list(all_p2.keys()))):
-        p1 = np.mean(all_p1.get(region, [0]))
-        p2 = np.mean(all_p2.get(region, [0]))
-        if region in HEATER_REGIONS:
-            print(f"    {region:20s}: P1={p1:.2f}K  P2=N/A (clamped)")
-        else:
-            print(f"    {region:20s}: P1={p1:.2f}K  P2={p2:.2f}K")
-            overall_p1.extend(all_p1.get(region, []))
-            overall_p2.extend(all_p2.get(region, []))
+            p2s = f"{p2:.2f}K" if not np.isnan(p2) else "N/A"
+            tag = " (BC)" if is_h else ""
+            print(f"  {rname:>18} | {mask.sum():>6} | {p1:>7.2f}K | {p2s:>8}{tag}")
 
-    p1_mae = np.mean(overall_p1) if overall_p1 else 0
-    p2_mae = np.mean(overall_p2) if overall_p2 else 0
-    print(f"\n  Phase 1 (0-3200s):     MAE={p1_mae:.2f}K")
-    print(f"  Phase 2 (3200-4000s):  MAE={p2_mae:.2f}K")
-    print(f"{sep}")
+        nh = {k: v for k, v in metrics.items() if not v['is_heater']}
+        if nh:
+            p1a = np.mean([v['p1_mae'] for v in nh.values()])
+            p2v = [v['p2_mae'] for v in nh.values() if not np.isnan(v['p2_mae'])]
+            p2a = np.mean(p2v) if p2v else float('nan')
+            print(f"  {'NON-HEATER AVG':>18} |        | {p1a:>7.2f}K | {p2a:.2f}K")
+        print(f"  Rollout: {rt:.1f}s ({T_pred.shape[0]} steps)\n")
+        all_results[f"sim_{sim_i}"] = metrics
+
+    print(f"{'='*80}")
+    print(f"  SUMMARY — GNN ROLLOUT")
+    print(f"{'='*80}")
+    for rname in ["steel_cylinder", "inner_box", "outer_box"]:
+        p1v, p2v = [], []
+        for sk, m in all_results.items():
+            if rname in m:
+                p1v.append(m[rname]["p1_mae"])
+                if not np.isnan(m[rname]["p2_mae"]):
+                    p2v.append(m[rname]["p2_mae"])
+        if p1v:
+            p2s = f"{np.mean(p2v):.2f}K" if p2v else "N/A"
+            print(f"  {rname:>18}: P1={np.mean(p1v):.2f}K  P2={p2s}")
+
+    out_path = "outputs/evaluation/gnn_rollout_results.json"
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(all_results, f, indent=2, default=str)
+    print(f"\n  Saved: {out_path}")
 
 
 if __name__ == "__main__":
