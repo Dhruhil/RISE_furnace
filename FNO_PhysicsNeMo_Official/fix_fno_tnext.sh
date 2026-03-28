@@ -1,3 +1,61 @@
+#!/bin/bash
+# ============================================================
+# Fix FNO: Predict T_next directly (not delta_T)
+# Inner_box grid (no outer_box) already applied
+#
+# Before: target = (T_next - T_current - dT_mean) / dT_std  (~tiny)
+# After:  target = (T_next - T_mean) / T_std  (~full range)
+#
+# cd /mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official
+# bash fix_fno_tnext.sh
+# ============================================================
+
+set -euo pipefail
+cd /mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official
+
+echo "============================================"
+echo "  Fix: Predict T_next instead of delta_T"
+echo "============================================"
+
+# Fix dataset.py: change target from dT_norm to T_next_norm
+python3 << 'XEOF'
+with open("data/dataset.py", "r") as f:
+    code = f.read()
+
+# Replace target computation
+old_target = '''        dT = T_grid_tp1 - T_grid_t
+        dT_norm = (dT - self.dT_mean) / self.dT_std'''
+
+new_target = '''        # Target: T_next normalised (not delta_T!)
+        # Predicting full temperature field gives much stronger loss signal
+        dT = T_grid_tp1 - T_grid_t  # keep for reference
+        dT_norm = (dT - self.dT_mean) / self.dT_std  # kept for compatibility'''
+
+if old_target in code:
+    code = code.replace(old_target, new_target)
+    print("  OK: Added comment to target section")
+
+# Replace y construction: use T_next_norm instead of dT_norm
+old_y = '''        # Target: (1, Gx, Gy, Gz)
+        y = dT_norm[None, ...]'''
+
+new_y = '''        # Target: T_next normalised (full field, not delta)
+        T_next_norm = (T_grid_tp1 - self.T_mean) / self.T_std
+        y = T_next_norm[None, ...]'''
+
+if old_y in code:
+    code = code.replace(old_y, new_y)
+    print("  OK: Target changed to T_next_norm")
+
+with open("data/dataset.py", "w") as f:
+    f.write(code)
+XEOF
+
+
+echo ""
+echo "  Rewriting train.py for T_next prediction..."
+
+cat > train.py << 'PYEOF'
 """
 3D FNO — Predicts T_next directly (not delta_T).
 Inner_box grid, region-weighted loss, pushforward, physics.
@@ -20,10 +78,10 @@ from utils.logging import setup_logging
 
 
 def get_physics_lambda(epoch, n_epochs):
-    warmup_end = int(n_epochs * 0.3)
+    warmup_end = int(n_epochs * 0.2)
     if epoch <= warmup_end:
         return 0.0
-    return 0.03 * (epoch - warmup_end) / (n_epochs - warmup_end)
+    return 0.1 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
 def get_pushforward_weight(epoch, n_epochs):
     warmup_end = int(n_epochs * 0.15)
@@ -289,3 +347,38 @@ def main():
 
 if __name__ == "__main__":
     main()
+PYEOF
+
+echo "  OK: train.py rewritten for T_next prediction"
+
+echo ""
+echo "============================================"
+echo "  VERIFICATION"
+echo "============================================"
+python3 -c "import ast; ast.parse(open('train.py').read()); print('  OK: train.py')"
+python3 -c "import ast; ast.parse(open('data/dataset.py').read()); print('  OK: dataset.py')"
+
+grep "T_next_norm" data/dataset.py | head -2
+grep "Predict T_next" train.py | head -1
+
+echo ""
+echo "============================================"
+echo "  DONE"
+echo "============================================"
+echo ""
+echo "  Target changed: delta_T -> T_next"
+echo "  Before: y = (T_next - T_current - dT_mean) / dT_std  (tiny values)"
+echo "  After:  y = (T_next - T_mean) / T_std  (full range 300-1100K)"
+echo ""
+echo "  Expected epoch 1:"
+echo "    MAE ~50-100K  (model starts far from correct T field)"
+echo "    Steel ~30-80K (must learn heating curve)"
+echo "    R2 ~0.85-0.95 (not trivially 1.0)"
+echo ""
+echo "  Expected epoch 100:"
+echo "    MAE ~3-8K     (smooth decrease)"
+echo "    Steel ~2-5K   (good accuracy)"
+echo "    R2 ~0.995+    (high but earned)"
+echo ""
+echo "  scancel <jobid>"
+echo "  sbatch run_alvis_fno.sh"
