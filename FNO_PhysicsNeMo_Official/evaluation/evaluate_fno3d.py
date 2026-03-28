@@ -79,9 +79,8 @@ def rollout_fno3d(model, dataset, sim_i, device, start_t=20):
             pred = model(x_t)
 
             # Denormalise dT on grid
-            dT_grid = pred[0, 0].cpu().numpy() * dataset.dT_std + dataset.dT_mean
-            T_next_grid = T_cur_grid + dT_grid
-
+            T_next_grid = pred[0, 0].cpu().numpy() * dataset.T_std + dataset.T_mean
+            
             # Interpolate from grid back to mesh cells
             interp_back = NearestNDInterpolator(grid_points, T_next_grid.ravel())
             T_next_cells = interp_back(coords).astype(np.float32)
