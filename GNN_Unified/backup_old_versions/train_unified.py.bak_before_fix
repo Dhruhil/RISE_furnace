@@ -20,32 +20,20 @@ from data.dataset_unified import UnifiedDataset
 
 SIGMA = 5.67e-8
 
-# ── Region-weighted loss (same as FNO: steel=10x, air=3x, outer=0.1x) ────
-
-def get_region_weights(batch):
-    rids = batch.region_ids
-    w = torch.ones(rids.shape[0], device=rids.device)
-    w[rids == 0] = 10.0   # steel_cylinder
-    w[rids == 1] = 3.0    # inner_box
-    w[rids == 11] = 0.1   # outer_box
-    # heaters (2-10): weight 1.0 but masked out by heater_mask anyway
-    return w.unsqueeze(-1)
-
-def weighted_mse(pred, target, weights):
-    return (weights * (pred - target).pow(2)).mean()
-
 
 # ── Curriculum ────────────────────────────────────────────────────────
 
 def get_physics_lambda(epoch, n_epochs):
-    import math
-    p = epoch / n_epochs
-    return min(0.0001 * math.exp(5.7 * p), 0.003)
+    warmup_end = int(n_epochs * 0.3)
+    if epoch <= warmup_end:
+        return 0.0
+    return 0.03 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
 def get_pushforward_weight(epoch, n_epochs):
-    import math
-    p = epoch / n_epochs
-    return min(0.001 * math.exp(6.2 * p), 0.50)
+    warmup_end = int(n_epochs * 0.15)
+    if epoch <= warmup_end:
+        return 0.0
+    return 0.5 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
 def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
     if epoch <= warmup_epochs:
@@ -55,7 +43,7 @@ def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
 
 # ── Corrected physics loss ────────────────────────────────────────────
 
-def physics_loss_unified(pred, batch, T_std_ds, T_mean):
+def physics_loss_unified(pred, batch, dT_std, dT_mean):
     """
     Corrected physics for furnace heat treatment.
     Conduction: spatial smoothness via graph Laplacian (scatter on dst)
@@ -67,7 +55,7 @@ def physics_loss_unified(pred, batch, T_std_ds, T_mean):
     device = pred.device
 
     # pred is normalised T_next directly
-    T_next = pred.squeeze(-1) * dT_std + dT_mean  # caller now passes T_std, T_mean correctly
+    T_next = pred.squeeze(-1) * dT_std + dT_mean  # dT_std/mean used as T_std/mean here
     T_now = batch.T_current.to(device)
     dT_pred = T_next - T_now
     T_set = batch.T_set_raw.to(device)
@@ -126,34 +114,26 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
         pred1 = model(batch)
         pred1 = pred1.masked_fill(heater_mask, 0.0)
         target1 = batch.y.masked_fill(heater_mask, 0.0)
-        rw = get_region_weights(batch)
-        loss1 = weighted_mse(pred1, target1, rw)
+        loss1 = F.mse_loss(pred1, target1)
 
         loss_data = loss1
         if w2 > 1e-6:
-            # Pushforward: predict step 2 using step 1's output
-            with torch.no_grad():
-                T_pred1 = pred1.squeeze(-1).detach() * T_std_ds + T_mean
-                T_pred1 = torch.where(batch.is_heater.bool(), batch.T_set_raw, T_pred1)
-                x2 = batch.x.clone()
-                x2[:, 3] = (T_pred1 - T_mean) / T_std_ds
-                x2[:, 6] = batch.x[:, 6] + cfg.dt / cfg.t_total
-            # Build a lightweight Data object — shares edge_index/edge_attr (no copy)
-            from torch_geometric.data import Data
-            batch2 = Data(
-                x=x2, edge_index=batch.edge_index, edge_attr=batch.edge_attr,
-                is_heater=batch.is_heater, T_current=T_pred1,
-                T_set_raw=batch.T_set_raw,
-            )
+            # pred1 is normalised T_next directly
+            T_pred1 = pred1.squeeze(-1) * T_std_ds + T_mean
+            T_pred1 = torch.where(batch.is_heater.bool(), batch.T_set_raw, T_pred1)
+            batch2 = batch.clone()
+            batch2.x = batch.x.clone()
+            batch2.x[:, 3] = (T_pred1 - T_mean) / T_std_ds
+            batch2.x[:, 6] = batch.x[:, 6] + 10.0 / 4000.0
+            batch2.T_current = T_pred1
             pred2 = model(batch2)
             pred2 = pred2.masked_fill(heater_mask, 0.0)
             target2 = batch.y2.masked_fill(heater_mask, 0.0)
-            loss2 = weighted_mse(pred2, target2, rw)
+            loss2 = F.mse_loss(pred2, target2)
             loss_data = loss1 + w2 * loss2
-            del batch2, x2, T_pred1
 
         if lam > 1e-6:
-            L_phys = physics_loss_unified(pred1, batch, T_std_ds, T_mean)
+            L_phys = physics_loss_unified(pred1, batch, dT_std, dT_mean)
             total_phys += L_phys.item()
             loss = (1.0 - lam) * loss_data + lam * L_phys
         else:
@@ -190,12 +170,11 @@ def evaluate(model, loader, device, lam=0.0):
         heater_mask = batch.is_heater.unsqueeze(-1).bool()
         pred_masked = pred.masked_fill(heater_mask, 0.0)
         target_masked = batch.y.masked_fill(heater_mask, 0.0)
-        rw = get_region_weights(batch)
-        loss_data = weighted_mse(pred_masked, target_masked, rw)
+        loss_data = F.mse_loss(pred_masked, target_masked)
         total_data += loss_data.item()
 
         if lam > 1e-6:
-            L_phys = physics_loss_unified(pred, batch, T_std_ds, T_mean)
+            L_phys = physics_loss_unified(pred, batch, dT_std, dT_mean)
             total_phys += L_phys.item()
         n += 1
 
@@ -205,6 +184,15 @@ def evaluate(model, loader, device, lam=0.0):
         T_true = batch.T_next
         all_pred_K.append(T_pred[non_heater].cpu().numpy())
         all_true_K.append(T_true[non_heater].cpu().numpy())
+
+        rid = batch.x[:, 5]
+        is_steel = (rid < 0.05) & non_heater
+        is_air   = (rid > 0.05) & (rid < 0.14)
+        is_outer = (rid > 0.95)
+        for name, mask in [("steel", is_steel), ("air", is_air), ("outer", is_outer)]:
+            if mask.any():
+                region_preds[name].append(T_pred[mask].cpu().numpy())
+                region_trues[name].append(T_true[mask].cpu().numpy())
 
         rid = batch.x[:, 5]
         is_steel = (rid < 0.05) & non_heater
@@ -232,18 +220,6 @@ def evaluate(model, loader, device, lam=0.0):
     m["loss_total"] = (1 - lam) * avg_data + lam * avg_phys if lam > 1e-6 else avg_data  # combined
     m["loss"] = avg_data                                               # model selection uses data-only
     m["within_5K"] = within_tolerance(all_pred_K, all_true_K, 5.0)
-
-    # Per-region MAE
-    if all_steel_pred:
-        sp = np.concatenate(all_steel_pred)
-        st = np.concatenate(all_steel_true)
-        m["steel_mae"] = float(np.mean(np.abs(sp - st)))
-    for rname in ["steel", "air", "outer"]:
-        if region_preds[rname]:
-            rp = np.concatenate(region_preds[rname])
-            rt = np.concatenate(region_trues[rname])
-            m[f"{rname}_mae"] = float(np.mean(np.abs(rp - rt)))
-
     return m
 
 
@@ -257,7 +233,7 @@ def main():
     args = parser.parse_args()
 
     cfg = CONFIG
-    # node_in_features = 16 (now default in base_config.py)
+    cfg.node_in_features = 16
     device = torch.device(
         args.device if args.device
         else ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -270,7 +246,7 @@ def main():
           f"hidden={cfg.hidden_features}  layers={cfg.n_message_passing_layers}")
     print(f"{sep}\n")
 
-    h5 = cfg.all_regions_dataset_path
+    h5 = "dataset_all_regions.h5"
     print("  Loading dataset...")
     train_ds = UnifiedDataset(h5, cfg, "train", "training")
     val_ds = UnifiedDataset(h5, cfg, "val", "training")
@@ -298,7 +274,7 @@ def main():
         # Test physics loss
         dT_std = train_ds.dT_std
         dT_mean = train_ds.dT_mean
-        L_phys = physics_loss_unified(out, batch, train_ds.T_std, train_ds.T_mean)
+        L_phys = physics_loss_unified(out, batch, dT_std, dT_mean)
         print(f"  Physics loss OK: {L_phys.item():.6f}")
 
         # Test backward pass

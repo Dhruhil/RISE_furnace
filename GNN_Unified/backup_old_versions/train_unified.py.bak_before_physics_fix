@@ -55,7 +55,7 @@ def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
 
 # ── Corrected physics loss ────────────────────────────────────────────
 
-def physics_loss_unified(pred, batch, T_std_ds, T_mean):
+def physics_loss_unified(pred, batch, dT_std, dT_mean):
     """
     Corrected physics for furnace heat treatment.
     Conduction: spatial smoothness via graph Laplacian (scatter on dst)
@@ -67,7 +67,7 @@ def physics_loss_unified(pred, batch, T_std_ds, T_mean):
     device = pred.device
 
     # pred is normalised T_next directly
-    T_next = pred.squeeze(-1) * dT_std + dT_mean  # caller now passes T_std, T_mean correctly
+    T_next = pred.squeeze(-1) * dT_std + dT_mean  # dT_std/mean used as T_std/mean here
     T_now = batch.T_current.to(device)
     dT_pred = T_next - T_now
     T_set = batch.T_set_raw.to(device)
@@ -153,7 +153,7 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
             del batch2, x2, T_pred1
 
         if lam > 1e-6:
-            L_phys = physics_loss_unified(pred1, batch, T_std_ds, T_mean)
+            L_phys = physics_loss_unified(pred1, batch, dT_std, dT_mean)
             total_phys += L_phys.item()
             loss = (1.0 - lam) * loss_data + lam * L_phys
         else:
@@ -195,7 +195,7 @@ def evaluate(model, loader, device, lam=0.0):
         total_data += loss_data.item()
 
         if lam > 1e-6:
-            L_phys = physics_loss_unified(pred, batch, T_std_ds, T_mean)
+            L_phys = physics_loss_unified(pred, batch, dT_std, dT_mean)
             total_phys += L_phys.item()
         n += 1
 
@@ -298,7 +298,7 @@ def main():
         # Test physics loss
         dT_std = train_ds.dT_std
         dT_mean = train_ds.dT_mean
-        L_phys = physics_loss_unified(out, batch, train_ds.T_std, train_ds.T_mean)
+        L_phys = physics_loss_unified(out, batch, dT_std, dT_mean)
         print(f"  Physics loss OK: {L_phys.item():.6f}")
 
         # Test backward pass
