@@ -43,14 +43,15 @@ class FNO3DDataset(Dataset):
     """
     3D grid dataset: all regions interpolated onto (Gx, Gy, Gz).
 
-    Channels (7 total):
+    Channels (8 total):
       [0]  T_norm        current temperature
       [1]  T_set_norm    furnace setpoint
       [2]  region_id/11  region encoding (0=steel, 11=outer_box)
       [3]  time/4000     normalised time
       [4]  is_heater     binary heater flag
-      [5]  kappa/100     thermal conductivity
-      [6]  rho/10000     density
+      [5]  kappa/100     thermal conductivity (W/mK)
+      [6]  Cp/1000       heat capacity (J/kgK)
+      [7]  rho/10000     density (kg/m3)
     """
 
     def __init__(self, h5_path, cfg, split="train", split_mode="training"):
@@ -216,6 +217,7 @@ class FNO3DDataset(Dataset):
                 ("region_id", region_ids_float),
                 ("is_heater", sim["is_heater"][:, None]),
                 ("kappa", sim["kappa"][:, None] / 100.0),
+                ("Cp", sim["Cp"][:, None] / 1000.0),
                 ("rho", sim["rho"][:, None] / 10000.0),
             ]:
                 n_ch = ch_data.shape[1] if ch_data.ndim > 1 else 1
@@ -284,16 +286,17 @@ class FNO3DDataset(Dataset):
         dT = T_grid_tp1 - T_grid_t  # keep for reference
         dT_norm = (dT - self.dT_mean) / self.dT_std  # kept for compatibility
 
-        # Build input: (7, Gx, Gy, Gz)
+        # Build input: (8, Gx, Gy, Gz)
         Gx, Gy, Gz = self.grid_shape
-        x = np.zeros((7, Gx, Gy, Gz), dtype=np.float32)
+        x = np.zeros((8, Gx, Gy, Gz), dtype=np.float32)
         x[0] = T_norm                                    # T_current
         x[1] = Tset_norm                                 # T_set (scalar broadcast)
         x[2] = fields["region_id"].squeeze(-1)           # region_id / 11
         x[3] = t_norm                                    # time
         x[4] = fields["is_heater"].squeeze(-1)           # is_heater
         x[5] = fields["kappa"].squeeze(-1)               # kappa/100
-        x[6] = fields["rho"].squeeze(-1)                 # rho/10000
+        x[6] = fields["Cp"].squeeze(-1)                  # Cp/1000
+        x[7] = fields["rho"].squeeze(-1)                 # rho/10000
 
         # Target: T_next normalised (full field, not delta)
         T_next_norm = (T_grid_tp1 - self.T_mean) / self.T_std

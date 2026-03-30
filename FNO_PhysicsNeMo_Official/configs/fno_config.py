@@ -37,11 +37,11 @@ class FNOConfig:
 
     # FNO architecture
     # Input channels: T_norm, T_set_norm, region_id/11, time,
-    #                 is_heater, kappa/100, rho/10000 = 7
+    #                 is_heater, kappa/100, Cp/1000, rho/10000 = 8
     # (single region_id channel instead of 12 one-hot masks)
-    fno_in_channels:  int = 7
+    fno_in_channels:  int = 8
     fno_out_channels: int = 1    # delta_T normalised
-    fno_modes:        list = field(default_factory=lambda: [10, 12, 18])  # modes per dim
+    fno_modes:        list = field(default_factory=lambda: [10, 11, 18])  # modes per dim
     fno_layers:       int = 3
     fno_latent:       int = 32
     fno_decoder_layers:     int = 2

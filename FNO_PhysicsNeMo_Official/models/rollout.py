@@ -1,92 +1,144 @@
 """
-Autoregressive rollout for FNO — all regions.
-FIXED: brick_heater + heater_1-8 clamped as boundary conditions.
+Autoregressive rollout for 3D FNO — all regions on regular grid.
+Master's Thesis: Simulating Heat Treatment using OpenFOAM and AI
+
+Rolls out on the 3D grid, then interpolates back to mesh cells
+for per-region accuracy reporting.
 """
 from __future__ import annotations
 
 import numpy as np
 import torch
-from models.fno_model import HeatTreatmentFNO
-
-HEATER_REGIONS = {
-    "heater_1", "heater_2", "heater_3", "heater_4",
-    "heater_5", "heater_6", "heater_7", "heater_8",
-    "brick_heater",
-}
+from scipy.interpolate import NearestNDInterpolator
 
 
 @torch.no_grad()
-def rollout_fno_all_regions(
-    model:    HeatTreatmentFNO,
-    dataset,
-    sim_idx:  int,
-    start_t:  int  = 40,
-    n_steps:  int  = None,
-    device:   str  = "cuda",
-) -> dict:
+def rollout_fno3d(model, dataset, sim_i, device="cuda", start_t=20):
+    """
+    Autoregressive rollout on 3D grid for one simulation.
+    
+    Returns:
+        T_pred_grid: (n_steps, Gx, Gy, Gz) — predictions on grid
+        T_true_grid: (n_steps, Gx, Gy, Gz) — ground truth on grid
+    """
     model.eval()
     model.to(device)
 
-    sim     = dataset._simulations[sim_idx]
-    n_times = sim["n_times"]
-    T_set   = sim["T_set"]
-    times   = sim["times"]
+    sim = dataset._simulations[sim_i]
+    static = dataset._static_grids[sim_i]
+    fields = static["interp_fields"]
+    cfg = dataset.cfg
 
-    data_steps = n_times - start_t - 1
-    if n_steps is None:
-        n_steps = data_steps
+    T_set = sim["T_set"]
+    times = sim["times"]
+    n_times = sim["n_times"]
+    Gx, Gy, Gz = dataset.grid_shape
+
+    T_mean = dataset.T_mean
+    T_std = dataset.T_std
+
+    # Start from ground truth at start_t
+    T_t = sim["T_all"][start_t]
+    interp_init = NearestNDInterpolator(sim["coords"], T_t)
+    T_cur_grid = interp_init(dataset.grid_points).reshape(Gx, Gy, Gz)
+
+    n_rollout = n_times - start_t
+    T_pred_grids = np.zeros((n_rollout, Gx, Gy, Gz), dtype=np.float32)
+    T_true_grids = np.zeros((n_rollout, Gx, Gy, Gz), dtype=np.float32)
+    T_pred_grids[0] = T_cur_grid
+    T_true_grids[0] = T_cur_grid
+
+    # Precompute ground truth on grid
+    for step in range(1, n_rollout):
+        t_idx = start_t + step
+        if t_idx >= n_times:
+            break
+        T_gt = sim["T_all"][t_idx]
+        interp_gt = NearestNDInterpolator(sim["coords"], T_gt)
+        T_true_grids[step] = interp_gt(dataset.grid_points).reshape(Gx, Gy, Gz)
+
+    # Autoregressive rollout
+    for step in range(1, n_rollout):
+        t_idx = start_t + step
+        if t_idx >= n_times:
+            break
+
+        t_val = times[t_idx - 1]
+        T_norm = (T_cur_grid - T_mean) / T_std
+        Tset_norm = (T_set - T_mean) / T_std
+        t_norm = t_val / 4000.0
+
+        # Build 8-channel input (matches dataset.py)
+        x = np.zeros((1, 8, Gx, Gy, Gz), dtype=np.float32)
+        x[0, 0] = T_norm
+        x[0, 1] = Tset_norm
+        x[0, 2] = fields["region_id"].squeeze(-1)
+        x[0, 3] = t_norm
+        x[0, 4] = fields["is_heater"].squeeze(-1)
+        x[0, 5] = fields["kappa"].squeeze(-1)
+        x[0, 6] = fields["Cp"].squeeze(-1)
+        x[0, 7] = fields["rho"].squeeze(-1)
+
+        x_t = torch.tensor(x, dtype=torch.float32).to(device)
+        pred_norm = model(x_t).squeeze(0).squeeze(0).cpu().numpy()
+
+        # Denormalise
+        T_next_grid = pred_norm * T_std + T_mean
+        T_next_grid = np.clip(T_next_grid, 290.0, T_set + 50.0)
+
+        T_pred_grids[step] = T_next_grid
+        T_cur_grid = T_next_grid
+
+    return T_pred_grids, T_true_grids
+
+
+def rollout_per_region(model, dataset, sim_i, device="cuda", start_t=20):
+    """
+    Rollout on 3D grid, then report per-region MAE on original mesh.
+    
+    Returns dict: {region_name: {"mae_p1": float, "mae_p2": float, "n_cells": int}}
+    """
+    T_pred_grids, T_true_grids = rollout_fno3d(
+        model, dataset, sim_i, device, start_t)
+
+    sim = dataset._simulations[sim_i]
+    cfg = dataset.cfg
+    n_train_steps = cfg.n_train_steps - start_t
+    grid_points = dataset.grid_points
+    coords = sim["coords"]
+    n_steps = T_pred_grids.shape[0]
+
+    from data.dataset import REGION_IDS
 
     results = {}
+    for region, slc in sim["region_slices"].items():
+        region_coords = coords[slc]
+        n_cells = region_coords.shape[0]
 
-    for region, rdata in sim["region_data"].items():
-        n_cells   = rdata["n_cells"]
-        region_id = rdata["region_id"]
-
-        T_max_region = sim["region_T_max"][region]
-        T_min_region = sim["region_T_min"][region]
-
-        # Heaters + brick_heater are boundary conditions — use ground truth
-        if region in HEATER_REGIONS:
-            gt_len = min(n_steps + 1, data_steps + 1)
-            T_true = rdata["T_array"][start_t: start_t + gt_len]
-            results[region] = (T_true.copy(), T_true)
-            continue
-
-        T_current = rdata["T_array"][start_t].copy().astype(np.float64)
-
-        T_rollout    = np.zeros((n_steps + 1, n_cells), dtype=np.float32)
-        T_rollout[0] = T_current
+        T_pred_region = np.zeros((n_steps, n_cells), dtype=np.float32)
+        T_true_region = np.zeros((n_steps, n_cells), dtype=np.float32)
 
         for step in range(n_steps):
-            t_idx = start_t + step
-            if t_idx < n_times:
-                t_val = float(times[t_idx])
-            else:
-                t_val = float(times[-1]) + (t_idx - n_times + 1) * 10.0
-            t_norm = t_val / 4000.0
+            interp_pred = NearestNDInterpolator(
+                grid_points, T_pred_grids[step].ravel())
+            interp_true = NearestNDInterpolator(
+                grid_points, T_true_grids[step].ravel())
+            T_pred_region[step] = interp_pred(region_coords)
+            T_true_region[step] = interp_true(region_coords)
 
-            T_norm    = ((T_current - dataset.T_mean) /
-                         (dataset.T_std + 1e-8)).astype(np.float32)
-            Tset_norm = float((T_set - dataset.Tset_mean) / dataset.Tset_std)
-            rid_norm  = float(region_id / 11.0)
+        p1_end = min(n_train_steps + 1, n_steps)
+        p1_mae = float(np.mean(np.abs(
+            T_pred_region[:p1_end] - T_true_region[:p1_end])))
 
-            x = np.stack([
-                T_norm,
-                np.full(n_cells, Tset_norm, dtype=np.float32),
-                np.full(n_cells, rid_norm,  dtype=np.float32),
-                np.full(n_cells, t_norm,    dtype=np.float32),
-            ], axis=0).astype(np.float32)
+        p2_mae = float("nan")
+        if p1_end < n_steps:
+            p2_mae = float(np.mean(np.abs(
+                T_pred_region[p1_end:] - T_true_region[p1_end:])))
 
-            x_t = torch.tensor(x, dtype=torch.float32, device=device).unsqueeze(0)
-            dT_norm = model(x_t).squeeze(0).squeeze(0).cpu().numpy()
-
-            dT        = dT_norm * dataset.dT_std + dataset.dT_mean
-            T_next    = T_current + dT
-            T_current = np.clip(T_next, T_min_region, T_max_region).astype(np.float64)
-            T_rollout[step + 1] = T_current.astype(np.float32)
-
-        gt_len = min(n_steps + 1, data_steps + 1)
-        T_true = rdata["T_array"][start_t: start_t + gt_len]
-        results[region] = (T_rollout, T_true)
+        results[region] = {
+            "mae_p1": p1_mae,
+            "mae_p2": p2_mae,
+            "n_cells": n_cells,
+        }
 
     return results

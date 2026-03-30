@@ -1,7 +1,7 @@
 """
 3D Fourier Neural Operator for heat treatment.
-Input:  (batch, 19, Gx, Gy, Gz)
-Output: (batch, 1, Gx, Gy, Gz)
+Input:  (batch, 8, Gx, Gy, Gz)  — [T, T_set, region_id, time, is_heater, kappa, Cp, rho]
+Output: (batch, 1, Gx, Gy, Gz)  — normalised T_next
 """
 from __future__ import annotations
 import torch
