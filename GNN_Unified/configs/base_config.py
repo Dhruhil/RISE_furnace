@@ -33,13 +33,13 @@ class BaseConfig:
     n_features:  int = 15
     val_fraction:  float = 0.14
     test_fraction: float = 0.10
-    graph_k_neighbors: int = 10
+    graph_k_neighbors: int = 12
     use_radius_graph:  bool = False
     node_in_features:         int = 16
     node_in_features_allregions: int = 7
     edge_in_features:         int = 5
     hidden_features:          int = 128
-    n_message_passing_layers: int = 6
+    n_message_passing_layers: int = 4
     output_features:          int = 1
     batch_size:      int   = 4
     n_epochs:        int   = 200

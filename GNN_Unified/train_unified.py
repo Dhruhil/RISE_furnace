@@ -67,7 +67,7 @@ def physics_loss_unified(pred, batch, T_std_ds, T_mean):
     device = pred.device
 
     # pred is normalised T_next directly
-    T_next = pred.squeeze(-1) * dT_std + dT_mean  # caller now passes T_std, T_mean correctly
+    T_next = pred.squeeze(-1) * T_std_ds + T_mean  # caller now passes T_std, T_mean correctly
     T_now = batch.T_current.to(device)
     dT_pred = T_next - T_now
     T_set = batch.T_set_raw.to(device)
@@ -103,7 +103,7 @@ def physics_loss_unified(pred, batch, T_std_ds, T_mean):
     # 4. EQUILIBRIUM (0.05) — dT -> 0 near T_set
     gap = (T_set - T_now).abs()
     near_eq = torch.exp(-gap / 20.0) * non_heater.float()
-    L_eq = (dT_pred * near_eq).pow(2).mean() / (dT_std ** 2 + 1e-8)
+    L_eq = (dT_pred * near_eq).pow(2).mean() / (T_std_ds ** 2 + 1e-8)
 
     return 0.5 * L_cond + 0.3 * L_conv + 0.15 * L_rad + 0.05 * L_eq
 
@@ -321,9 +321,9 @@ def main():
         return
 
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                               num_workers=4, pin_memory=True)
+                               num_workers=8, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
-                             num_workers=2)
+                             num_workers=4)
 
     model = HeatTreatmentGNN(cfg).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
