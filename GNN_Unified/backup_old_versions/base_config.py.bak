@@ -1,29 +1,36 @@
 """
-Base configuration — Unified GNN.
+Base configuration — Option A temporal split.
 Configured for Alvis HPC cluster (C3SE).
 """
+
 from __future__ import annotations
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_BASE = os.environ.get("GNN_BASE_DIR", "/mimer/NOBACKUP/groups/revar")
+# Alvis path
+_BASE = "/mimer/NOBACKUP/groups/revar"
 
 
 @dataclass
 class BaseConfig:
+
+    # ── Paths (Alvis) ─────────────────────────────────────────────────────────
     dataset_path:   str = f"{_BASE}/dataset_cylinder_features.h5"
-    all_regions_dataset_path: str = f"{_BASE}/GNN_Unified/dataset_all_regions_66cases.h5"
-    output_dir:     str = f"{_BASE}/GNN_Unified/outputs"
-    checkpoint_dir: str = f"{_BASE}/GNN_Unified/outputs/checkpoints"
-    log_dir:        str = f"{_BASE}/GNN_Unified/outputs/logs"
+    all_regions_dataset_path: str = "/mimer/NOBACKUP/groups/revar/GNN_PhysicsNeMo_Official/dataset_all_regions.h5"
+    output_dir:     str = f"{_BASE}/GNN_PhysicsNeMo_Official/outputs"
+    checkpoint_dir: str = f"{_BASE}/GNN_PhysicsNeMo_Official/outputs/checkpoints"
+    log_dir:        str = f"{_BASE}/GNN_PhysicsNeMo_Official/outputs/logs"
 
     feature_cols: list = field(default_factory=lambda: [
-        "x", "y", "z", "t", "T_set", "cx", "cy", "cz",
-        "radius", "height", "volume", "mass", "kappa", "Cp", "rho",
+        "x", "y", "z", "t",
+        "T_set", "cx", "cy", "cz",
+        "radius", "height", "volume", "mass",
+        "kappa", "Cp", "rho",
     ])
     all_regions: list = field(default_factory=lambda: [
-        "steel_cylinder", "inner_box", "outer_box",
+        "steel_cylinder",
+        "inner_box",
+        "outer_box",
         "heater_1", "heater_2", "heater_3", "heater_4",
         "heater_5", "heater_6", "heater_7", "heater_8",
         "brick_heater",
@@ -31,16 +38,20 @@ class BaseConfig:
     n_regions: int = 12
     target_col: str = "T"
     n_features:  int = 15
+
     val_fraction:  float = 0.14
     test_fraction: float = 0.10
-    graph_k_neighbors: int = 10
+
+    graph_k_neighbors: int  = 16
     use_radius_graph:  bool = False
-    node_in_features:         int = 16
+
+    node_in_features:         int = 11
     node_in_features_allregions: int = 7
-    edge_in_features:         int = 5
+    edge_in_features:         int = 4
     hidden_features:          int = 128
-    n_message_passing_layers: int = 6
+    n_message_passing_layers: int = 15
     output_features:          int = 1
+
     batch_size:      int   = 4
     n_epochs:        int   = 200
     learning_rate:   float = 1e-3
@@ -48,23 +59,27 @@ class BaseConfig:
     lr_patience:     int   = 20
     weight_decay:    float = 1e-5
     grad_clip:       float = 1.0
+
     dt:               float = 10.0
     t_total:          float = 4000.0
     train_time_end:   float = 3200.0
     predict_time_end: float = 4000.0
+
     sigma_sb:       float = 5.67e-8
     epsilon_steel:  float = 0.80
     w_conduction:   float = 0.3
     w_convection:   float = 0.5
     w_radiation:    float = 0.3
     char_thickness: float = 0.01
+
     log_every_n_epochs:  int  = 1
     save_every_n_epochs: int  = 10
     use_wandb:           bool = False
     wandb_project:       str  = "heat-treatment-gnn"
-    wandb_run_name:      str  = "unified_gnn_alvis"
+    wandb_run_name:      str  = "meshgraphnet_optionA_alvis_A100"
+
     device:      str = "cuda"
-    num_workers: int = 0
+    num_workers: int = 0       # A100 on Alvis — use 4 workers
 
     @property
     def n_train_steps(self) -> int:
@@ -80,15 +95,13 @@ class BaseConfig:
 
     def __post_init__(self):
         for p in [
-            self.checkpoint_dir, self.log_dir,
+            self.checkpoint_dir,
+            self.log_dir,
             self.output_dir + "/predictions",
             self.output_dir + "/plots",
             self.output_dir + "/verification",
         ]:
-            try:
-                Path(p).mkdir(parents=True, exist_ok=True)
-            except OSError:
-                pass
+            Path(p).mkdir(parents=True, exist_ok=True)
 
 
 CONFIG = BaseConfig()

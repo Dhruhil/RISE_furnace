@@ -4,7 +4,7 @@
 #SBATCH --partition=alvis
 #SBATCH --output=/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs/unified_%j.log
 #SBATCH --error=/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs/unified_err_%j.log
-#SBATCH --time=48:00:00
+#SBATCH --time=30:00:00
 #SBATCH --gpus-per-node=A40:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -20,6 +20,6 @@ echo "=== Start: $(date) ==="
 
 apptainer exec --nv \
   /mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif \
-  python -u train_unified.py --epochs 80 --lr 1e-3 --batch 4
+  python -u train_unified.py --epochs 40 --lr 1e-3 --batch 2
 
 echo "=== DONE: $(date) ==="

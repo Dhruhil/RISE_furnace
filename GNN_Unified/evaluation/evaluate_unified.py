@@ -64,13 +64,13 @@ def rollout_gnn(model, dataset, sim_i, device, start_t=20):
                 all_rids / 11.0,
                 np.full(total, t_norm, dtype=np.float32),
                 is_heater,
-                np.full(total, sim.get("cx", 0.103) / 0.206, dtype=np.float32),
+                np.full(total, sim.get("cx", 0.0) / 0.206, dtype=np.float32),
                 np.full(total, sim.get("cy", 0.18) / 0.36, dtype=np.float32),
                 np.full(total, sim.get("cz", 0.195) / 0.39, dtype=np.float32),
                 np.full(total, sim.get("radius", 0.05) / 0.10, dtype=np.float32),
                 np.full(total, sim.get("height", 0.10) / 0.20, dtype=np.float32),
-                np.full(total, sim.get("kappa", 55.0) / 100.0, dtype=np.float32),
-                np.full(total, sim.get("Cp", 500.0) / 1000.0, dtype=np.float32),
+                np.full(total, sim.get("kappa", 60.0) / 100.0, dtype=np.float32),
+                np.full(total, sim.get("Cp", 450.0) / 1000.0, dtype=np.float32),
                 np.full(total, sim.get("rho", 7800.0) / 10000.0, dtype=np.float32),
             ]).astype(np.float32)
 
@@ -145,7 +145,7 @@ def main():
             mask = (all_rids == rid)
             if mask.sum() == 0:
                 continue
-            is_h = rid in HEATER_REGIONS
+            is_h = rname in HEATER_REGIONS
             p1 = float(np.mean(np.abs(T_pred[1:p1_end, mask] - T_true[1:p1_end, mask]))) if p1_end > 1 else 0
             p2_data = T_pred[p1_end:, mask] - T_true[p1_end:, mask]
             p2 = float(np.mean(np.abs(p2_data))) if p2_data.size > 0 else float('nan')
