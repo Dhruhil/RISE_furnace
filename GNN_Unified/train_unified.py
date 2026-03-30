@@ -308,10 +308,13 @@ def main():
     ckpt_mgr = CheckpointManager(
         str(Path(cfg.checkpoint_dir).parent / "checkpoints_unified"))
 
-    print(f"  {'Ep':>4} | {'TrData':>9} | {'VaData':>9} | "
-          f"{'MAE':>5} | {'R2':>7} | {'W5K':>5} | {'lam':>5} | {'w2':>4} | "
-          f"{'Steel':>5} {'Air':>5} {'Outer':>5} | {'Time':>5}")
-    print(f"  {'-'*100}")
+    print(f"  {'Ep':>4} | {'TrLoss':>9} | {'TrData':>9} | "
+          f"{'TrPhys':>9} | {'VaData':>9} | "
+          f"{'VaPhys':>9} | {'VaTotal':>9} | "
+          f"{'MAE':>6} | {'R2':>7} | "
+          f"{'W5K':>5} | {'lam':>5} | "
+          f"{'w2':>4} | {'Time':>5} | {'Steel':>8}")
+    print(f"  {'-'*130}")
 
     t0 = time.time()
     n_ep = args.epochs

@@ -38,7 +38,8 @@ def rollout_gnn(model, dataset, sim_i, device, start_t=20):
 
     all_coords = sim["all_coords"]
     all_rids = sim["all_region_ids"]
-    is_heater = np.array([1.0 if int(all_rids[j]) in HEATER_REGIONS else 0.0
+    heater_rids = {REGION_IDS[r] for r in HEATER_REGIONS if r in REGION_IDS}
+    is_heater = np.array([1.0 if int(all_rids[j]) in heater_rids else 0.0
                           for j in range(total)], dtype=np.float32)
 
     T_mean = dataset.T_mean
@@ -100,6 +101,7 @@ def main():
     args = parser.parse_args()
 
     cfg = CONFIG
+    cfg.node_in_features = 16
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     print(f"\n{'='*80}")
@@ -107,13 +109,13 @@ def main():
     print(f"  Phase 1: 0-3200s | Phase 2: 3200-4000s")
     print(f"{'='*80}\n")
 
-    test_ds = UnifiedDataset(cfg.dataset_path, cfg, "test", "evaluation")
+    test_ds = UnifiedDataset(cfg.all_regions_dataset_path, cfg, "test", "evaluation")
 
     ckpt_path = "outputs/checkpoints_unified/best_model.pt"
     print(f"  Loading model from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     model = HeatTreatmentGNN(cfg).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(ckpt["model_state"])
     model.eval()
     print(f"  Model loaded (epoch {ckpt.get('epoch', '?')})\n")
 

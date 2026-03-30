@@ -13,7 +13,7 @@ _BASE = os.environ.get("GNN_BASE_DIR", "/mimer/NOBACKUP/groups/revar")
 @dataclass
 class BaseConfig:
     dataset_path:   str = f"{_BASE}/dataset_cylinder_features.h5"
-    all_regions_dataset_path: str = f"{_BASE}/GNN_PhysicsNeMo_Official/dataset_all_regions.h5"
+    all_regions_dataset_path: str = f"{_BASE}/GNN_Unified/dataset_all_regions_66cases.h5"
     output_dir:     str = f"{_BASE}/GNN_Unified/outputs"
     checkpoint_dir: str = f"{_BASE}/GNN_Unified/outputs/checkpoints"
     log_dir:        str = f"{_BASE}/GNN_Unified/outputs/logs"
