@@ -1,0 +1,8 @@
+*.h5
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+outputs/
+*.log
+*.pt

@@ -23,7 +23,7 @@ def get_physics_lambda(epoch, n_epochs):
     warmup_end = int(n_epochs * 0.3)
     if epoch <= warmup_end:
         return 0.0
-    return 0.03 * (epoch - warmup_end) / (n_epochs - warmup_end)
+    return 0.003 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
 def get_pushforward_weight(epoch, n_epochs):
     warmup_end = int(n_epochs * 0.15)

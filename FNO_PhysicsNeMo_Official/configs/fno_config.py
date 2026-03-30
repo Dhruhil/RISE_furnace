@@ -11,7 +11,7 @@ _BASE = "/mimer/NOBACKUP/groups/revar"
 @dataclass
 class FNOConfig:
     # Paths
-    dataset_path:   str = f"{_BASE}/GNN_PhysicsNeMo_Official/dataset_all_regions.h5"
+    dataset_path:   str = f"{_BASE}/FNO_PhysicsNeMo_Official/dataset_all_regions_66cases.h5"
     output_dir:     str = f"{_BASE}/FNO_PhysicsNeMo_Official/outputs"
     checkpoint_dir: str = f"{_BASE}/FNO_PhysicsNeMo_Official/outputs/checkpoints"
     log_dir:        str = f"{_BASE}/FNO_PhysicsNeMo_Official/outputs/logs"
