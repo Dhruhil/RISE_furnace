@@ -4,7 +4,7 @@
 #SBATCH --partition=alvis
 #SBATCH --output=/mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official/outputs/logs/fno3d_%j.log
 #SBATCH --error=/mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official/outputs/logs/fno3d_err_%j.log
-#SBATCH --time=24:00:00
+#SBATCH --time=08:30:00
 #SBATCH --gpus-per-node=A40:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1

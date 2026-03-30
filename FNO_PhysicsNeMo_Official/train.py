@@ -131,7 +131,7 @@ def evaluate(model, loader, device, train_ds, lam=0.0):
 
         # Denormalise: pred is normalised T_next
         T_pred_K = (pred.squeeze(1).cpu().numpy() * T_std + T_mean).ravel()
-        T_true_K = T_next_gt.numpy().ravel()
+        T_true_K = T_next_gt.cpu().numpy().ravel()
         all_pred.append(T_pred_K)
         all_true.append(T_true_K)
 
@@ -140,7 +140,7 @@ def evaluate(model, loader, device, train_ds, lam=0.0):
         is_steel = (rid < 0.05)
         if is_steel.any():
             T_p = (pred.squeeze(1).cpu().numpy() * T_std + T_mean)
-            T_t = T_next_gt.numpy()
+            T_t = T_next_gt.cpu().numpy()
             steel_pred.append(T_p[is_steel])
             steel_true.append(T_t[is_steel])
 
