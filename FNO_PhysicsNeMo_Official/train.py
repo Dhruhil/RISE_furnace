@@ -44,10 +44,10 @@ def get_physics_lambda(epoch, n_epochs):
 
 def get_pushforward_weight(epoch, n_epochs):
     """Pushforward ramp: off for first 15%, then linear to 0.50."""
-    warmup_end = int(n_epochs * 0.15)
+    warmup_end = int(n_epochs * 0.10)
     if epoch <= warmup_end:
         return 0.0
-    return 0.5 * (epoch - warmup_end) / (n_epochs - warmup_end)
+    return 1.0 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
 
 def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
@@ -101,7 +101,7 @@ def physics_loss_3d(pred, x, T_mean, T_std):
     change = (T_pred_norm - T_cur_norm)
     L_eq = (change * near_eq).pow(2).mean()
 
-    return 0.5 * L_conv + 0.3 * L_smooth + 0.2 * L_eq
+    return 1.0 * L_conv + 0.3 * L_smooth + 0.2 * L_eq
 
 
 # ── Evaluation ────────────────────────────────────────────────

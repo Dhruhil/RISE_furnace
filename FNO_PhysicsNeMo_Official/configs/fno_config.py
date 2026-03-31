@@ -26,9 +26,9 @@ class FNOConfig:
     n_regions: int = 12
 
     # 3D grid resolution (furnace: x=0.206, y=0.36, z=0.39)
-    grid_x: int = 20   # ~8.6mm resolution
-    grid_y: int = 24   # ~9.0mm resolution
-    grid_z: int = 36   # ~8.9mm resolution
+    grid_x: int = 30   # ~8.6mm resolution
+    grid_y: int = 36   # ~9.0mm resolution
+    grid_z: int = 54   # ~8.9mm resolution
 
     # Furnace bounds (from .geo file)
     x_min: float = 0.0;   x_max: float = 0.206
@@ -41,7 +41,7 @@ class FNOConfig:
     # (single region_id channel instead of 12 one-hot masks)
     fno_in_channels:  int = 8
     fno_out_channels: int = 1    # delta_T normalised
-    fno_modes:        list = field(default_factory=lambda: [10, 11, 18])  # modes per dim
+    fno_modes:        list = field(default_factory=lambda: [15, 18, 27])  # modes per dim
     fno_layers:       int = 3
     fno_latent:       int = 32
     fno_decoder_layers:     int = 2
@@ -52,8 +52,8 @@ class FNOConfig:
     n_epochs:        int   = 100
     learning_rate:   float = 1e-3
     lr_decay_factor: float = 0.5
-    lr_patience:     int   = 15
-    weight_decay:    float = 1e-5
+    lr_patience:     int   = 20
+    weight_decay:    float = 0.0
     grad_clip:       float = 1.0
 
     # Data splits

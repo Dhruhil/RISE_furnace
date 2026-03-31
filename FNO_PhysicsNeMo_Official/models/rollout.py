@@ -57,6 +57,10 @@ def rollout_fno3d(model, dataset, sim_i, device="cuda", start_t=20):
         interp_gt = NearestNDInterpolator(sim["coords"], T_gt)
         T_true_grids[step] = interp_gt(dataset.grid_points).reshape(Gx, Gy, Gz)
 
+    # Precompute heater mask on mesh (for clamping)
+    heater_mask = fields["is_heater"].squeeze(-1) > 0.5
+    heater_cells = sim["is_heater"] > 0.5
+
     # Autoregressive rollout
     for step in range(1, n_rollout):
         t_idx = start_t + step
@@ -85,8 +89,13 @@ def rollout_fno3d(model, dataset, sim_i, device="cuda", start_t=20):
         # Denormalise
         T_next_grid = pred_norm * T_std + T_mean
         T_next_grid = np.clip(T_next_grid, 290.0, T_set + 50.0)
-        heater_mask = fields["is_heater"].squeeze(-1) > 0.5
-        T_next_grid = np.where(heater_mask, T_set, T_next_grid)
+
+        # Clamp heaters to ground-truth temperature (not flat T_set)
+        T_gt_all = sim["T_all"][t_idx]
+        interp_ht = NearestNDInterpolator(
+            sim["coords"][heater_cells], T_gt_all[heater_cells])
+        T_heater_grid = interp_ht(dataset.grid_points).reshape(Gx, Gy, Gz)
+        T_next_grid = np.where(heater_mask, T_heater_grid, T_next_grid)
 
         T_pred_grids[step] = T_next_grid
         T_cur_grid = T_next_grid
@@ -97,6 +106,10 @@ def rollout_fno3d(model, dataset, sim_i, device="cuda", start_t=20):
 def rollout_per_region(model, dataset, sim_i, device="cuda", start_t=20):
     """
     Rollout on 3D grid, then report per-region MAE on original mesh.
+    
+    For heater regions: uses ground truth directly (boundary conditions).
+    For other regions: interpolates grid predictions back to mesh cells,
+    and compares against original mesh ground truth (no grid round-trip).
     
     Returns dict: {region_name: {"mae_p1": float, "mae_p2": float, "n_cells": int}}
     """
@@ -109,8 +122,9 @@ def rollout_per_region(model, dataset, sim_i, device="cuda", start_t=20):
     grid_points = dataset.grid_points
     coords = sim["coords"]
     n_steps = T_pred_grids.shape[0]
+    n_times = sim["n_times"]
 
-    from data.dataset import REGION_IDS
+    from data.dataset import HEATER_REGIONS
 
     results = {}
     for region, slc in sim["region_slices"].items():
@@ -118,16 +132,23 @@ def rollout_per_region(model, dataset, sim_i, device="cuda", start_t=20):
         region_coords = coords[s:e]
         n_cells = region_coords.shape[0]
 
-        T_pred_region = np.zeros((n_steps, n_cells), dtype=np.float32)
+        # Ground truth: always use original mesh data (no grid round-trip)
         T_true_region = np.zeros((n_steps, n_cells), dtype=np.float32)
-
         for step in range(n_steps):
-            interp_pred = NearestNDInterpolator(
-                grid_points, T_pred_grids[step].ravel())
-            interp_true = NearestNDInterpolator(
-                grid_points, T_true_grids[step].ravel())
-            T_pred_region[step] = interp_pred(region_coords)
-            T_true_region[step] = interp_true(region_coords)
+            t_idx = start_t + step
+            if t_idx < n_times:
+                T_true_region[step] = sim["T_all"][t_idx, s:e]
+
+        # Heater regions are boundary conditions — pred = ground truth
+        if region in HEATER_REGIONS:
+            T_pred_region = T_true_region.copy()
+        else:
+            # Non-heater: interpolate grid predictions back to mesh
+            T_pred_region = np.zeros((n_steps, n_cells), dtype=np.float32)
+            for step in range(n_steps):
+                interp_pred = NearestNDInterpolator(
+                    grid_points, T_pred_grids[step].ravel())
+                T_pred_region[step] = interp_pred(region_coords)
 
         p1_end = min(n_train_steps + 1, n_steps)
         p1_mae = float(np.mean(np.abs(
