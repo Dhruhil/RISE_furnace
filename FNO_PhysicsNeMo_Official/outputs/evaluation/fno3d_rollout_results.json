@@ -1,372 +1,312 @@
 {
-  "sim_45": {
-    "steel_cylinder": {
-      "n_cells": 2310,
-      "p1_mae": 3.9029200077056885,
-      "p2_mae": 5.680291652679443,
-      "is_heater": false
-    },
-    "inner_box": {
-      "n_cells": 5037,
-      "p1_mae": 21.81707191467285,
-      "p2_mae": 27.596460342407227,
-      "is_heater": false
+  "sim_60": {
+    "brick_heater": {
+      "mae_p1": 252.00204467773438,
+      "mae_p2": 230.9724578857422,
+      "n_cells": 322
     },
     "heater_1": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 99.90983581542969,
+      "mae_p2": 187.10838317871094,
+      "n_cells": 450
     },
     "heater_2": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 164.8080596923828,
+      "mae_p2": 360.4134216308594,
+      "n_cells": 450
     },
     "heater_3": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 145.22039794921875,
+      "mae_p2": 331.87811279296875,
+      "n_cells": 450
     },
     "heater_4": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 67.80136108398438,
+      "mae_p2": 179.3917999267578,
+      "n_cells": 450
     },
     "heater_5": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 87.5843276977539,
+      "mae_p2": 177.02450561523438,
+      "n_cells": 450
     },
     "heater_6": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 157.7281494140625,
+      "mae_p2": 348.7055969238281,
+      "n_cells": 450
     },
     "heater_7": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 149.11009216308594,
+      "mae_p2": 338.6435241699219,
+      "n_cells": 450
     },
     "heater_8": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 70.49005126953125,
+      "mae_p2": 181.56179809570312,
+      "n_cells": 450
     },
-    "brick_heater": {
-      "n_cells": 322,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+    "inner_box": {
+      "mae_p1": 98.79164123535156,
+      "mae_p2": 186.40045166015625,
+      "n_cells": 5037
     },
     "outer_box": {
-      "n_cells": 2379,
-      "p1_mae": 232.03802490234375,
-      "p2_mae": 254.4241180419922,
-      "is_heater": false
+      "mae_p1": 86.33334350585938,
+      "mae_p2": 110.08526611328125,
+      "n_cells": 2379
+    },
+    "steel_cylinder": {
+      "mae_p1": 69.3636245727539,
+      "mae_p2": 42.65156173706055,
+      "n_cells": 2310
     }
   },
-  "sim_46": {
-    "steel_cylinder": {
-      "n_cells": 2310,
-      "p1_mae": 5.139650821685791,
-      "p2_mae": 7.709573268890381,
-      "is_heater": false
-    },
-    "inner_box": {
-      "n_cells": 5037,
-      "p1_mae": 21.665307998657227,
-      "p2_mae": 27.944787979125977,
-      "is_heater": false
+  "sim_61": {
+    "brick_heater": {
+      "mae_p1": 212.4044647216797,
+      "mae_p2": 185.02926635742188,
+      "n_cells": 322
     },
     "heater_1": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 122.89580535888672,
+      "mae_p2": 239.63250732421875,
+      "n_cells": 450
     },
     "heater_2": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 210.68617248535156,
+      "mae_p2": 436.4565124511719,
+      "n_cells": 450
     },
     "heater_3": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 190.1478271484375,
+      "mae_p2": 408.2297668457031,
+      "n_cells": 450
     },
     "heater_4": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 103.49139404296875,
+      "mae_p2": 275.28228759765625,
+      "n_cells": 450
     },
     "heater_5": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 112.42996978759766,
+      "mae_p2": 228.77853393554688,
+      "n_cells": 450
     },
     "heater_6": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 203.16680908203125,
+      "mae_p2": 425.0545959472656,
+      "n_cells": 450
     },
     "heater_7": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 194.212158203125,
+      "mae_p2": 415.8763427734375,
+      "n_cells": 450
     },
     "heater_8": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 105.60006713867188,
+      "mae_p2": 281.01531982421875,
+      "n_cells": 450
     },
-    "brick_heater": {
-      "n_cells": 322,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+    "inner_box": {
+      "mae_p1": 120.03168487548828,
+      "mae_p2": 238.09996032714844,
+      "n_cells": 5037
     },
     "outer_box": {
-      "n_cells": 2379,
-      "p1_mae": 228.12002563476562,
-      "p2_mae": 253.28224182128906,
-      "is_heater": false
+      "mae_p1": 88.50904083251953,
+      "mae_p2": 162.6260223388672,
+      "n_cells": 2379
+    },
+    "steel_cylinder": {
+      "mae_p1": 64.92304992675781,
+      "mae_p2": 44.23528289794922,
+      "n_cells": 2310
     }
   },
-  "sim_47": {
-    "steel_cylinder": {
-      "n_cells": 2310,
-      "p1_mae": 3.04758358001709,
-      "p2_mae": 4.440145015716553,
-      "is_heater": false
-    },
-    "inner_box": {
-      "n_cells": 5037,
-      "p1_mae": 20.979049682617188,
-      "p2_mae": 28.0069637298584,
-      "is_heater": false
+  "sim_62": {
+    "brick_heater": {
+      "mae_p1": 304.5831298828125,
+      "mae_p2": 297.9510192871094,
+      "n_cells": 322
     },
     "heater_1": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 72.05036926269531,
+      "mae_p2": 128.6280517578125,
+      "n_cells": 450
     },
     "heater_2": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 103.82804870605469,
+      "mae_p2": 257.0954895019531,
+      "n_cells": 450
     },
     "heater_3": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 87.11416625976562,
+      "mae_p2": 229.61573791503906,
+      "n_cells": 450
     },
     "heater_4": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 38.419700622558594,
+      "mae_p2": 94.8951644897461,
+      "n_cells": 450
     },
     "heater_5": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 60.83439636230469,
+      "mae_p2": 104.79573822021484,
+      "n_cells": 450
     },
     "heater_6": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 98.01663970947266,
+      "mae_p2": 244.65663146972656,
+      "n_cells": 450
     },
     "heater_7": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 90.37959289550781,
+      "mae_p2": 234.74261474609375,
+      "n_cells": 450
     },
     "heater_8": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 42.45033645629883,
+      "mae_p2": 94.47583770751953,
+      "n_cells": 450
     },
-    "brick_heater": {
-      "n_cells": 322,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+    "inner_box": {
+      "mae_p1": 74.98655700683594,
+      "mae_p2": 134.0292205810547,
+      "n_cells": 5037
     },
     "outer_box": {
-      "n_cells": 2379,
-      "p1_mae": 213.55857849121094,
-      "p2_mae": 251.33721923828125,
-      "is_heater": false
+      "mae_p1": 94.43025970458984,
+      "mae_p2": 97.6309585571289,
+      "n_cells": 2379
+    },
+    "steel_cylinder": {
+      "mae_p1": 83.48097229003906,
+      "mae_p2": 50.11547088623047,
+      "n_cells": 2310
     }
   },
-  "sim_48": {
-    "steel_cylinder": {
-      "n_cells": 2310,
-      "p1_mae": 3.1476950645446777,
-      "p2_mae": 4.575281143188477,
-      "is_heater": false
-    },
-    "inner_box": {
-      "n_cells": 5037,
-      "p1_mae": 21.385072708129883,
-      "p2_mae": 28.495908737182617,
-      "is_heater": false
+  "sim_63": {
+    "brick_heater": {
+      "mae_p1": 193.5961456298828,
+      "mae_p2": 171.73585510253906,
+      "n_cells": 322
     },
     "heater_1": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 136.76622009277344,
+      "mae_p2": 273.0130310058594,
+      "n_cells": 450
     },
     "heater_2": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 235.4332275390625,
+      "mae_p2": 476.737060546875,
+      "n_cells": 450
     },
     "heater_3": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 214.6211395263672,
+      "mae_p2": 448.5597229003906,
+      "n_cells": 450
     },
     "heater_4": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 131.0982208251953,
+      "mae_p2": 335.09423828125,
+      "n_cells": 450
     },
     "heater_5": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 126.8624267578125,
+      "mae_p2": 260.45660400390625,
+      "n_cells": 450
     },
     "heater_6": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 227.90931701660156,
+      "mae_p2": 466.27532958984375,
+      "n_cells": 450
     },
     "heater_7": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 218.77801513671875,
+      "mae_p2": 456.6803894042969,
+      "n_cells": 450
     },
     "heater_8": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 133.633544921875,
+      "mae_p2": 344.3278503417969,
+      "n_cells": 450
     },
-    "brick_heater": {
-      "n_cells": 322,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+    "inner_box": {
+      "mae_p1": 134.1238250732422,
+      "mae_p2": 277.042724609375,
+      "n_cells": 5037
     },
     "outer_box": {
-      "n_cells": 2379,
-      "p1_mae": 216.57098388671875,
-      "p2_mae": 250.72682189941406,
-      "is_heater": false
+      "mae_p1": 97.29671478271484,
+      "mae_p2": 195.12290954589844,
+      "n_cells": 2379
+    },
+    "steel_cylinder": {
+      "mae_p1": 62.57063293457031,
+      "mae_p2": 74.60574340820312,
+      "n_cells": 2310
     }
   },
-  "sim_49": {
-    "steel_cylinder": {
-      "n_cells": 2310,
-      "p1_mae": 5.9393463134765625,
-      "p2_mae": 3.8212902545928955,
-      "is_heater": false
-    },
-    "inner_box": {
-      "n_cells": 5037,
-      "p1_mae": 22.083311080932617,
-      "p2_mae": 29.341548919677734,
-      "is_heater": false
+  "sim_64": {
+    "brick_heater": {
+      "mae_p1": 306.67559814453125,
+      "mae_p2": 299.9025573730469,
+      "n_cells": 322
     },
     "heater_1": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 72.58475494384766,
+      "mae_p2": 128.28887939453125,
+      "n_cells": 450
     },
     "heater_2": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 103.52660369873047,
+      "mae_p2": 256.20404052734375,
+      "n_cells": 450
     },
     "heater_3": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 87.01322937011719,
+      "mae_p2": 228.9208984375,
+      "n_cells": 450
     },
     "heater_4": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 38.591617584228516,
+      "mae_p2": 94.48091888427734,
+      "n_cells": 450
     },
     "heater_5": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 61.63532257080078,
+      "mae_p2": 104.3651351928711,
+      "n_cells": 450
     },
     "heater_6": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 97.8753662109375,
+      "mae_p2": 243.7653350830078,
+      "n_cells": 450
     },
     "heater_7": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 90.30254364013672,
+      "mae_p2": 234.09039306640625,
+      "n_cells": 450
     },
     "heater_8": {
-      "n_cells": 450,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+      "mae_p1": 42.79491424560547,
+      "mae_p2": 94.12469482421875,
+      "n_cells": 450
     },
-    "brick_heater": {
-      "n_cells": 322,
-      "p1_mae": 0.0,
-      "p2_mae": 0.0,
-      "is_heater": true
+    "inner_box": {
+      "mae_p1": 74.17567443847656,
+      "mae_p2": 133.31991577148438,
+      "n_cells": 5037
     },
     "outer_box": {
-      "n_cells": 2379,
-      "p1_mae": 216.33070373535156,
-      "p2_mae": 250.33145141601562,
-      "is_heater": false
+      "mae_p1": 95.1395492553711,
+      "mae_p2": 97.67510223388672,
+      "n_cells": 2379
+    },
+    "steel_cylinder": {
+      "mae_p1": 77.63499450683594,
+      "mae_p2": 47.41828536987305,
+      "n_cells": 2310
     }
   }
 }

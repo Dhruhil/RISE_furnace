@@ -39,7 +39,7 @@ def get_physics_lambda(epoch, n_epochs):
       epoch 70+: λ = 0.003 (capped)
     """
     p = epoch / n_epochs
-    return min(0.0001 * math.exp(5.7 * p), 0.003)
+    return 0.0005
 
 
 def get_pushforward_weight(epoch, n_epochs):

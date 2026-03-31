@@ -4,10 +4,10 @@
 #SBATCH --partition=alvis
 #SBATCH --output=outputs/logs/eval_%j.log
 #SBATCH --error=outputs/logs/eval_err_%j.log
-#SBATCH --time=01:00:00
+#SBATCH --time=00:20:00
 #SBATCH --gpus-per-node=A40:1
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 
 cd /mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official
 

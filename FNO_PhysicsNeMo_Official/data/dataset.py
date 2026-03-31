@@ -156,6 +156,7 @@ class FNO3DDataset(Dataset):
                     "Cp": all_Cp,
                     "rho": all_rho,
                     "total_cells": offset,
+                    "region_slices": region_slices,
                 })
 
         # Train/val/test split by simulation

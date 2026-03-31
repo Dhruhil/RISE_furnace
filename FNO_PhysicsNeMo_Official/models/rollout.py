@@ -85,6 +85,8 @@ def rollout_fno3d(model, dataset, sim_i, device="cuda", start_t=20):
         # Denormalise
         T_next_grid = pred_norm * T_std + T_mean
         T_next_grid = np.clip(T_next_grid, 290.0, T_set + 50.0)
+        heater_mask = fields["is_heater"].squeeze(-1) > 0.5
+        T_next_grid = np.where(heater_mask, T_set, T_next_grid)
 
         T_pred_grids[step] = T_next_grid
         T_cur_grid = T_next_grid
@@ -112,7 +114,8 @@ def rollout_per_region(model, dataset, sim_i, device="cuda", start_t=20):
 
     results = {}
     for region, slc in sim["region_slices"].items():
-        region_coords = coords[slc]
+        s, e = slc
+        region_coords = coords[s:e]
         n_cells = region_coords.shape[0]
 
         T_pred_region = np.zeros((n_steps, n_cells), dtype=np.float32)
