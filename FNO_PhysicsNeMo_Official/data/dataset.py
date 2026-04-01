@@ -165,17 +165,21 @@ class FNO3DDataset(Dataset):
         n_val = max(1, int(n_sims * cfg.val_fraction))
         n_train = n_sims - n_val - n_test
 
+        import random
+        shuffled = list(range(n_sims))
+        random.Random(42).shuffle(shuffled)
+
         if split == "train":
-            self.sim_indices = list(range(n_train))
+            self.sim_indices = shuffled[:n_train]
         elif split == "val":
-            self.sim_indices = list(range(n_train, n_train + n_val))
+            self.sim_indices = shuffled[n_train:n_train + n_val]
         else:
-            self.sim_indices = list(range(n_train + n_val, n_sims))
+            self.sim_indices = shuffled[n_train + n_val:]
 
         # Compute stats from train sims
         all_T = []
         all_dT = []
-        for si in range(n_train):
+        for si in shuffled[:n_train]:
             sim = self._simulations[si]
             all_T.append(sim["T_all"].ravel())
             dT = np.diff(sim["T_all"], axis=0).ravel()
