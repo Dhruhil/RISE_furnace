@@ -38,14 +38,13 @@ def weighted_mse(pred, target, weights):
 # ── Curriculum ────────────────────────────────────────────────────────
 
 def get_physics_lambda(epoch, n_epochs):
-    import math
-    p = epoch / n_epochs
-    return min(0.0001 * math.exp(5.7 * p), 0.003)
+    return 0.0005
 
 def get_pushforward_weight(epoch, n_epochs):
-    import math
-    p = epoch / n_epochs
-    return min(0.001 * math.exp(6.2 * p), 0.50)
+    warmup_end = int(n_epochs * 0.10)
+    if epoch <= warmup_end:
+        return 0.0
+    return 1.0 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
 def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
     if epoch <= warmup_epochs:
@@ -326,7 +325,7 @@ def main():
                              num_workers=4)
 
     model = HeatTreatmentGNN(cfg).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=15, factor=0.5, min_lr=1e-6)
     ckpt_mgr = CheckpointManager(

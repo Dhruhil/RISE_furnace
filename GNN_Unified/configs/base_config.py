@@ -46,7 +46,7 @@ class BaseConfig:
     learning_rate:   float = 1e-3
     lr_decay_factor: float = 0.5
     lr_patience:     int   = 20
-    weight_decay:    float = 1e-5
+    weight_decay:    float = 0.0
     grad_clip:       float = 1.0
     dt:               float = 10.0
     t_total:          float = 4000.0

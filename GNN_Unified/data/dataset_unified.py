@@ -108,16 +108,20 @@ class UnifiedDataset(torch.utils.data.Dataset):
         n_val = max(1, int(n_sims * cfg.val_fraction))
         n_train = n_sims - n_val - n_test
 
+        import random
+        shuffled = list(range(n_sims))
+        random.Random(42).shuffle(shuffled)
+
         split_map = {
-            "train": list(range(0, n_train)),
-            "val": list(range(n_train, n_train + n_val)),
-            "test": list(range(n_train + n_val, n_sims)),
+            "train": shuffled[:n_train],
+            "val": shuffled[n_train:n_train + n_val],
+            "test": shuffled[n_train + n_val:],
         }
         self.sim_indices = split_map[split]
 
         # Normalisation from training data
         all_T, all_dT = [], []
-        for i in range(n_train):
+        for i in shuffled[:n_train]:
             for rdata in self._simulations[i]["region_data"].values():
                 all_T.append(rdata["T_array"].ravel())
                 dT = np.diff(rdata["T_array"], axis=0)[20:].ravel()
