@@ -37,18 +37,27 @@ class TestGenerateValidCases:
     def test_all_cases_have_required_keys(self):
         cases = generate_valid_cases(n_samples=5, seed=42)
         required = {"T_set", "cx", "cy", "cz", "radius", "height",
-                     "kappa", "Cp", "rho", "volume", "mass", "mol_weight"}
+                     "kappa", "Cp", "rho", "mol_weight",
+                     "brick_heater_kappa"}
         for c in cases:
             assert required.issubset(c.keys()), f"Missing: {required - set(c.keys())}"
 
-    def test_cx_is_always_zero(self):
-        cases = generate_valid_cases(n_samples=10, seed=42)
-        for c in cases:
-            assert c["cx"] == 0.0
-
-    def test_volume_is_consistent(self):
-        import math
+    def test_no_volume_or_mass(self):
+        """volume and mass are no longer generated."""
         cases = generate_valid_cases(n_samples=5, seed=42)
         for c in cases:
-            expected = math.pi * c["radius"] ** 2 * c["height"]
-            assert abs(c["volume"] - expected) < 1e-12
+            assert "volume" not in c
+            assert "mass" not in c
+
+    def test_cx_varies(self):
+        """cx should now be sampled from LHS, not always 0."""
+        cases = generate_valid_cases(n_samples=20, seed=42)
+        cx_values = {c["cx"] for c in cases}
+        # With 5 cx choices and 20 samples, we should see multiple values
+        assert len(cx_values) > 1, f"Expected cx to vary, got {cx_values}"
+
+    def test_brick_heater_kappa_present(self):
+        cases = generate_valid_cases(n_samples=5, seed=42)
+        for c in cases:
+            assert "brick_heater_kappa" in c
+            assert c["brick_heater_kappa"] == 8.0  # currently fixed

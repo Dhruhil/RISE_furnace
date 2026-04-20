@@ -1,11 +1,15 @@
 """
 Build the feature matrix X and target vector Y from simulation data.
 
-Feature layout (15 columns — immutable after first training):
-  [0]  x        [1]  y       [2]  z       [3]  t
-  [4]  T_set    [5]  cx      [6]  cy      [7]  cz
-  [8]  radius   [9]  height  [10] volume  [11] mass
-  [12] kappa    [13] Cp      [14] rho
+Feature layout (14 columns — immutable after first training):
+  [0]  x        [1]  y       [2]  z        [3]  t
+  [4]  T_set    [5]  cx      [6]  cy       [7]  cz
+  [8]  radius   [9]  height  [10] kappa    [11] Cp
+  [12] rho      [13] brick_heater_kappa
+
+CHANGES from v1 (15 cols):
+  - Removed: volume (col 10), mass (col 11)
+  - Added:   brick_heater_kappa (col 13)
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ def build_feature_matrix(
         cyl:     Cylinder/material parameters.
 
     Returns:
-        ``(X, Y)`` with shapes ``(N, 15)`` and ``(N, 1)`` as float32,
+        ``(X, Y)`` with shapes ``(N, 14)`` and ``(N, 1)`` as float32,
         where ``N = n_valid_timesteps × n_cells``.
     """
     n_cells = coords.shape[0]
@@ -47,21 +51,21 @@ def build_feature_matrix(
             continue
 
         X_block = np.column_stack([
-            coords[:, 0],                                                # x
-            coords[:, 1],                                                # y
-            coords[:, 2],                                                # z
-            np.full(n_cells, t_val, dtype=np.float64),                   # t
-            np.full(n_cells, cyl["T_set"], dtype=np.float32),            # T_set
-            np.full(n_cells, cyl.get("cx", 0.0), dtype=np.float64),     # cx
-            np.full(n_cells, cyl["cy"], dtype=np.float64),               # cy
-            np.full(n_cells, cyl["cz"], dtype=np.float64),               # cz
-            np.full(n_cells, cyl["radius"], dtype=np.float64),           # radius
-            np.full(n_cells, cyl["height"], dtype=np.float64),           # height
-            np.full(n_cells, cyl["volume"], dtype=np.float64),           # volume
-            np.full(n_cells, cyl["mass"], dtype=np.float64),             # mass
-            np.full(n_cells, cyl["kappa"], dtype=np.float32),            # kappa
-            np.full(n_cells, cyl["Cp"], dtype=np.float32),               # Cp
-            np.full(n_cells, cyl["rho"], dtype=np.float32),              # rho
+            coords[:, 0],                                                    # x
+            coords[:, 1],                                                    # y
+            coords[:, 2],                                                    # z
+            np.full(n_cells, t_val, dtype=np.float64),                       # t
+            np.full(n_cells, cyl["T_set"], dtype=np.float32),                # T_set
+            np.full(n_cells, cyl.get("cx", 0.0), dtype=np.float64),         # cx
+            np.full(n_cells, cyl["cy"], dtype=np.float64),                   # cy
+            np.full(n_cells, cyl["cz"], dtype=np.float64),                   # cz
+            np.full(n_cells, cyl["radius"], dtype=np.float64),               # radius
+            np.full(n_cells, cyl["height"], dtype=np.float64),               # height
+            np.full(n_cells, cyl["kappa"], dtype=np.float32),                # kappa
+            np.full(n_cells, cyl["Cp"], dtype=np.float32),                   # Cp
+            np.full(n_cells, cyl["rho"], dtype=np.float32),                  # rho
+            np.full(n_cells, cyl.get("brick_heater_kappa", 8.0),            # brick_heater_kappa
+                    dtype=np.float32),
         ]).astype(np.float32)
 
         Y_block = T_array[ti, :].reshape(-1, 1).astype(np.float32)
@@ -106,8 +110,6 @@ def load_cylinder_params(
 
 
 def _ensure_derived_fields(p: dict[str, Any]) -> None:
-    """Add volume and mass if missing."""
-    if "volume" not in p and "radius" in p and "height" in p:
-        p["volume"] = math.pi * p["radius"] ** 2 * p["height"]
-    if "mass" not in p and "rho" in p and "volume" in p:
-        p["mass"] = p["rho"] * p["volume"]
+    """Add brick_heater_kappa default if missing (backward compat)."""
+    if "brick_heater_kappa" not in p:
+        p["brick_heater_kappa"] = 8.0

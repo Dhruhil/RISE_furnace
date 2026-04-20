@@ -5,7 +5,7 @@ Responsibilities:
   1. Copy base case
   2. Clean old time folders / artefacts
   3. Patch heater temperatures
-  4. Write thermophysical properties
+  4. Write thermophysical properties (steel_cylinder + brick_heater)
   5. Patch .geo file for cylinder geometry
   6. Write Allmesh / fix Allrun
   7. Save cylinder_params.json
@@ -60,7 +60,7 @@ def build_single_case(
     # 3. Patch heater temperatures
     patch_heater_temperatures(case_dir, params["T_set"], HEATER_REGIONS)
 
-    # 4. Write thermophysical properties
+    # 4. Write thermophysical properties (steel_cylinder + brick_heater)
     write_thermophysical_properties(case_dir, params)
 
     # 5. Patch .geo file
@@ -82,10 +82,15 @@ def build_single_case(
 
 
 def _write_cylinder_params(case_dir: Path, params: dict[str, Any]) -> None:
-    """Persist cylinder parameters for use by the dataset builder."""
+    """Persist cylinder parameters for use by the dataset builder.
+
+    Keys match FEATURE_COLUMNS (minus x, y, z, t which come from VTK).
+    Removed: volume, mass (no longer features).
+    Added:   brick_heater_kappa.
+    """
     keys = [
         "T_set", "cx", "cy", "cz", "radius", "height",
-        "volume", "mass", "kappa", "Cp", "rho", "mol_weight",
+        "kappa", "Cp", "rho", "mol_weight", "brick_heater_kappa",
     ]
     out = {k: float(params[k]) for k in keys if k in params}
     path = case_dir / "cylinder_params.json"

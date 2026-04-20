@@ -4,8 +4,6 @@ Patch the GMSH .geo file for modified cylinder parameters.
 Modifies:
   1. Disk(45) center and radius
   2. Extrude height for Surface{45}
-  3. Strips structured mesh constraints (Layers, Transfinite, Recombine)
-  4. Appends unstructured mesh settings
 """
 
 from __future__ import annotations
@@ -18,17 +16,6 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Mesh settings appended to every patched .geo file
-_UNSTRUCTURED_MESH_FOOTER = """
-// ---- Mesh settings for unstructured tet meshing ----
-Mesh.Algorithm = 6;
-Mesh.Algorithm3D = 1;
-Mesh.OptimizeNetgen = 0;
-Mesh.Optimize = 1;
-Mesh.CharacteristicLengthMin = 0.003;
-Mesh.CharacteristicLengthMax = 0.015;
-"""
-
 
 def patch_geo_file(
     case_dir: Path,
@@ -36,7 +23,7 @@ def patch_geo_file(
     geo_filename: str,
     base_case: Path,
 ) -> bool:
-    """Patch .geo file with new cylinder geometry and clean mesh constraints.
+    """Patch .geo file with new cylinder geometry.
 
     Returns:
         True if both Disk and Extrude were patched exactly once.
@@ -55,12 +42,6 @@ def patch_geo_file(
 
     # 2. Patch Extrude height
     content, n_ext = _patch_extrude(content, params)
-
-    # 3. Strip structured mesh constraints
-    content = _strip_structured_constraints(content)
-
-    # 4. Append unstructured settings
-    content += _UNSTRUCTURED_MESH_FOOTER
 
     geo_dst.write_text(content)
 
@@ -120,23 +101,3 @@ def _patch_extrude(content: str, params: dict[str, Any]) -> tuple[str, int]:
         i += 1
 
     return "\n".join(result_lines), n_patched
-
-
-def _strip_structured_constraints(content: str) -> str:
-    """Remove Layers, Transfinite, and Recombine directives."""
-    content = re.sub(
-        r'Layers\s*\{[^}]*\}\s*;?',
-        '/* Layers removed */',
-        content,
-    )
-    content = re.sub(
-        r'Transfinite\s+(Curve|Surface|Volume)\s*[^;]*;',
-        r'/* Transfinite \1 removed */',
-        content,
-    )
-    content = re.sub(
-        r'Recombine\s+Surface\s*[^;]*;',
-        '/* Recombine removed */',
-        content,
-    )
-    return content

@@ -67,7 +67,9 @@ def generate_valid_cases(
 ) -> list[dict[str, Any]]:
     """Generate LHS samples and filter by geometry constraints.
 
-    Adds derived fields (cx, mol_weight, volume, mass) to each case.
+    Adds derived fields (cx, mol_weight) to each case.
+    Removed: volume, mass (no longer features).
+    Added:   brick_heater_kappa comes from LHS sampling.
 
     Returns:
         List of valid parameter dictionaries.
@@ -77,18 +79,58 @@ def generate_valid_cases(
     )
 
     valid: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
     for p in raw_cases:
-        p["cx"] = 0.0  # fixed: disk at x=0
         p["mol_weight"] = mol_weight
-        p["volume"] = math.pi * p["radius"] ** 2 * p["height"]
-        p["mass"] = p["rho"] * p["volume"]
-
-        if validate_cylinder_geometry(p):
-            valid.append(p)
-
+        if not validate_cylinder_geometry(p):
+            continue
+        key = tuple(sorted(
+            (k, round(v, 6)) for k, v in p.items()
+            if k in ("T_set", "cx", "cy", "cz", "radius", "height",
+                     "kappa", "Cp", "rho", "brick_heater_kappa")
+        ))
+        if key in seen:
+            continue
+        seen.add(key)
+        valid.append(p)
     logger.info(
-        "LHS: %d generated, %d passed geometry validation",
+        "LHS: %d generated, %d unique valid (removed %d duplicates)",
         len(raw_cases),
         len(valid),
+        len(raw_cases) - len(valid),
     )
     return valid
+
+
+def generate_unique_random_cases(
+    n_samples: int,
+    seed: int = 42,
+    mol_weight: float = 195.0,
+) -> list[dict[str, Any]]:
+    """Generate n_samples unique cases by random selection from all combinations."""
+    import itertools
+    rng = np.random.default_rng(seed)
+    ranges = PARAMETER_RANGES.to_dict()
+    names = list(ranges.keys())
+    
+    # Generate all combinations
+    all_combos = list(itertools.product(*[ranges[n] for n in names]))
+    
+    # Build all cases
+    all_cases = []
+    for combo in all_combos:
+        p = dict(zip(names, combo))
+        p["mol_weight"] = mol_weight
+        if validate_cylinder_geometry(p):
+            all_cases.append(p)
+    
+    # Random select n_samples
+    n = min(n_samples, len(all_cases))
+    indices = rng.choice(len(all_cases), size=n, replace=False)
+    selected = [all_cases[i] for i in sorted(indices)]
+    
+    logger.info(
+        "Random selection: %d valid combos, picked %d unique cases",
+        len(all_cases), len(selected),
+    )
+    return selected

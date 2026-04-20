@@ -121,19 +121,16 @@ class ParameterRanges:
        like 8, for the brick heater."
     """
 
-   # T_set: list[float] = field(default_factory=lambda: [1173.15, 1223.15, 1273.15, 1323.15, 1373.15])
-    #cx: list[float] = field(default_factory=lambda: [-0.14, -0.10, -0.06, -0.02, 0.02, 0.06, 0.10, 0.14])
-    #cy: list[float] = field(default_factory=lambda: [0.12, 0.15, 0.18, 0.21, 0.24])
-    T_set: list[float] = field(default_factory=lambda: [1273.15])
-    cx: list[float] = field(default_factory=lambda: [0.00])
-    cy: list[float] = field(default_factory=lambda: [0.18])
+    T_set: list[float] = field(default_factory=lambda: [1173.15, 1223.15, 1273.15, 1323.15, 1373.15])
+    cx: list[float] = field(default_factory=lambda: [-0.14, -0.10, -0.06, -0.02, 0.0, 0.02, 0.06, 0.10, 0.14])
+    cy: list[float] = field(default_factory=lambda: [0.12, 0.15, 0.18, 0.21, 0.24])
     cz: list[float] = field(default_factory=lambda: [0.195])
     radius: list[float] = field(default_factory=lambda: [0.05])
     height: list[float] = field(default_factory=lambda: [0.10])
     kappa: list[float] = field(default_factory=lambda: [80.0])
     Cp: list[float] = field(default_factory=lambda: [450.0])
     rho: list[float] = field(default_factory=lambda: [7800.0])
-    brick_heater_kappa: list[float] = field(default_factory=lambda: [8.0, 16.0])
+    brick_heater_kappa: list[float] = field(default_factory=lambda: [8.0])
 
     def to_dict(self) -> Dict[str, List[float]]:
         return {

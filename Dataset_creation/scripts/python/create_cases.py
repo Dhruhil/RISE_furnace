@@ -16,7 +16,7 @@ from configs.defaults import PipelineConfig
 from configs.parameters import BASE_PARAMS, PARAMETER_RANGES
 from src.core.case_builder import build_single_case
 from src.core.manifest import Manifest
-from src.sampling.lhs import generate_valid_cases
+from src.sampling.lhs import generate_unique_random_cases
 from src.utils.logging import get_logger
 from src.utils.naming import case_name
 from src.utils.scripts import write_run_script
@@ -38,12 +38,12 @@ def main() -> None:
 
     ranges = PARAMETER_RANGES.to_dict()
     for name, values in ranges.items():
-        logger.info("  %-8s: %s", name, values)
+        logger.info("  %-20s: %s", name, values)
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate valid cases
-    cases = generate_valid_cases(cfg.n_lhs_samples, cfg.lhs_seed)
+    cases = generate_unique_random_cases(cfg.n_lhs_samples, cfg.lhs_seed)
 
     if not cases:
         logger.error("No valid cases generated!")
@@ -68,13 +68,13 @@ def main() -> None:
         case_dir = cfg.output_dir / name
 
         logger.info(
-            "[%03d/%d] %s | T=%.0fK cy=%.3f cz=%.3f r=%.1fmm h=%.1fmm "
-            "κ=%.0f Cp=%.0f ρ=%.0f V=%.2fcm³",
+            "[%03d/%d] %s | T=%.0fK cx=%.3f cy=%.3f cz=%.3f r=%.1fmm h=%.1fmm "
+            "κ_steel=%.0f κ_brick=%.0f Cp=%.0f ρ=%.0f",
             idx, len(cases), name,
-            params["T_set"], params["cy"], params["cz"],
+            params["T_set"], params.get("cx", 0.0), params["cy"], params["cz"],
             params["radius"] * 1e3, params["height"] * 1e3,
-            params["kappa"], params["Cp"], params["rho"],
-            params["volume"] * 1e6,
+            params["kappa"], params.get("brick_heater_kappa", 8.0),
+            params["Cp"], params["rho"],
         )
 
         build_single_case(cfg.base_case, case_dir, params)
@@ -92,7 +92,10 @@ def main() -> None:
     logger.info("Manifest: %s (%d entries)", cfg.manifest_path, len(manifest))
 
     # Generate run script
-    script_path = write_run_script(cfg.output_dir, cases, cfg.container_base_dir, max_jobs=cfg.max_parallel_jobs,)
+    script_path = write_run_script(
+        cfg.output_dir, cases, cfg.container_base_dir,
+        max_jobs=cfg.max_parallel_jobs,
+    )
     logger.info("Run script: %s", script_path)
 
     # Summary table
@@ -101,20 +104,20 @@ def main() -> None:
     logger.info("SUMMARY: %d cases created", len(cases))
     logger.info("=" * 60)
     header = (
-        f"{'#':>4} {'T_set':>6} {'cy[mm]':>7} {'cz[mm]':>7} "
-        f"{'r[mm]':>6} {'h[mm]':>6} {'κ':>4} {'Cp':>5} "
-        f"{'ρ':>5} {'V[cm³]':>7}"
+        f"{'#':>4} {'T_set':>6} {'cx[mm]':>7} {'cy[mm]':>7} {'cz[mm]':>7} "
+        f"{'r[mm]':>6} {'h[mm]':>6} {'κ_s':>4} {'κ_b':>4} {'Cp':>5} "
+        f"{'ρ':>5}"
     )
     logger.info(header)
-    logger.info("-" * 70)
+    logger.info("-" * 80)
     for idx, p in enumerate(cases, start=1):
         logger.info(
-            "%4d %6.0f %7.1f %7.1f %6.1f %6.1f %4.0f %5.0f %5.0f %7.2f",
+            "%4d %6.0f %7.1f %7.1f %7.1f %6.1f %6.1f %4.0f %4.0f %5.0f %5.0f",
             idx, p["T_set"],
-            p["cy"] * 1e3, p["cz"] * 1e3,
+            p.get("cx", 0.0) * 1e3, p["cy"] * 1e3, p["cz"] * 1e3,
             p["radius"] * 1e3, p["height"] * 1e3,
-            p["kappa"], p["Cp"], p["rho"],
-            p["volume"] * 1e6,
+            p["kappa"], p.get("brick_heater_kappa", 8.0),
+            p["Cp"], p["rho"],
         )
 
     logger.info("")

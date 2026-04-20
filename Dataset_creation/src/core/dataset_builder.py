@@ -132,5 +132,10 @@ def _process_case(
         save_case_h5(case_dir, coords, times, T_array, cyl)
 
     X, Y = build_feature_matrix(coords, times, T_array, cyl)
+    # Filter outlier boundary cells (T > 1773K = 1500°C)
+    mask = Y.ravel() < 1773
+    if mask.sum() < len(mask):
+        logger.info("  Filtered %d outlier cells (T > 1500°C)", len(mask) - mask.sum())
+        X, Y = X[mask], Y[mask]
     logger.info("  Rows: %s", f"{X.shape[0]:,}")
     return X, Y, cyl

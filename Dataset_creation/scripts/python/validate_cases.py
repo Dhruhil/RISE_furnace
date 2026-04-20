@@ -6,7 +6,7 @@ Checks:
   - Case directory exists
   - .geo file is patched
   - Allmesh is executable
-  - thermophysicalProperties exists
+  - thermophysicalProperties exists (steel_cylinder AND brick_heater)
   - cylinder_params.json is valid
 """
 
@@ -57,12 +57,19 @@ def main() -> None:
             if not allmesh.is_file():
                 errors.append("Allmesh missing")
 
-            # Check thermo
-            thermo = (
+            # Check steel_cylinder thermo
+            thermo_steel = (
                 case_dir / "constant" / "steel_cylinder" / "thermophysicalProperties"
             )
-            if not thermo.is_file():
-                errors.append("thermophysicalProperties missing")
+            if not thermo_steel.is_file():
+                errors.append("steel_cylinder thermophysicalProperties missing")
+
+            # Check brick_heater thermo
+            thermo_brick = (
+                case_dir / "constant" / "brick_heater" / "thermophysicalProperties"
+            )
+            if not thermo_brick.is_file():
+                errors.append("brick_heater thermophysicalProperties missing")
 
             # Check cylinder_params.json
             params_json = case_dir / "cylinder_params.json"
@@ -70,7 +77,10 @@ def main() -> None:
                 try:
                     with open(params_json) as f:
                         p = json.load(f)
-                    required = {"T_set", "cy", "cz", "radius", "height", "kappa", "Cp", "rho"}
+                    required = {
+                        "T_set", "cx", "cy", "cz", "radius", "height",
+                        "kappa", "Cp", "rho", "brick_heater_kappa",
+                    }
                     missing = required - set(p.keys())
                     if missing:
                         errors.append(f"params missing keys: {missing}")

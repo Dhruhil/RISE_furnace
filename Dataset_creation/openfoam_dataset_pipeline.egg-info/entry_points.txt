@@ -1,4 +1,0 @@
-[console_scripts]
-create-cases = scripts.create_cases:main
-create-dataset = scripts.create_dataset:main
-validate-cases = scripts.validate_cases:main
