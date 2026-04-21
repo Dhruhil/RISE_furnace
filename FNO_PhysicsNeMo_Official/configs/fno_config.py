@@ -8,10 +8,19 @@ from pathlib import Path
 
 _BASE = "/mimer/NOBACKUP/groups/revar"
 
+# ========================================================================
+# PHYSICAL CONSTANTS for physics-informed loss
+# ========================================================================
+SIGMA_SB = 5.67e-8            # Stefan-Boltzmann constant, W/(m^2*K^4)
+EMISSIVITY_STEEL = 0.80       # emissivity of oxidized steel (0-1)
+H_CONV = 25.0                 # natural convection coefficient, W/(m^2*K)
+CHAR_THICKNESS = 0.0167         # V/A ratio for cylinder r=50mm, h=100mm (Incropera 2011)
+
+
 @dataclass
 class FNOConfig:
     # Paths
-    dataset_path:   str = f"{_BASE}/FNO_PhysicsNeMo_Official/dataset_all_regions_66cases.h5"
+    dataset_path:   str = f"{_BASE}/FNO_PhysicsNeMo_Official/dataset_v2_all_regions_clean.h5"
     output_dir:     str = f"{_BASE}/FNO_PhysicsNeMo_Official/outputs"
     checkpoint_dir: str = f"{_BASE}/FNO_PhysicsNeMo_Official/outputs/checkpoints"
     log_dir:        str = f"{_BASE}/FNO_PhysicsNeMo_Official/outputs/logs"
@@ -62,9 +71,9 @@ class FNOConfig:
 
     # Time
     dt:               float = 10.0
-    t_total:          float = 4000.0
-    train_time_end:   float = 3200.0
-    predict_time_end: float = 4000.0
+    t_total:          float = 3460.0
+    train_time_end:   float = 2760.0
+    predict_time_end: float = 3460.0
 
     # Logging
     log_every_n_epochs:  int  = 1

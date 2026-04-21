@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=heat_fno_3d
-#SBATCH --account=NAISS2026-4-525
+#SBATCH --account=NAISS2026-4-712
 #SBATCH --partition=alvis
 #SBATCH --output=/mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official/outputs/logs/fno3d_%j.log
 #SBATCH --error=/mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official/outputs/logs/fno3d_err_%j.log
@@ -12,12 +12,16 @@
 
 mkdir -p /mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official/outputs/logs
 mkdir -p /mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official/outputs/checkpoints
+module purge 2>/dev/null
+unset PYTHONPATH
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 cd /mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official
 
 echo "=== 3D FNO TRAINING ==="
 echo "=== Start: $(date) ==="
 
-apptainer exec --nv \
+apptainer exec --nv --cleanenv \
   /mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif \
   python -u train.py --epochs 100 --lr 1e-3 --batch 4
 

@@ -70,7 +70,7 @@ def rollout_fno3d(model, dataset, sim_i, device="cuda", start_t=20):
         t_val = times[t_idx - 1]
         T_norm = (T_cur_grid - T_mean) / T_std
         Tset_norm = (T_set - T_mean) / T_std
-        t_norm = t_val / 4000.0
+        t_norm = t_val / dataset.cfg.t_total
 
         # Build 8-channel input (matches dataset.py)
         x = np.zeros((1, 8, Gx, Gy, Gz), dtype=np.float32)

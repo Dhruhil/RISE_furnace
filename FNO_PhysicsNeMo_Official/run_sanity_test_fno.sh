@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=fno_test
-#SBATCH --account=NAISS2026-4-525
+#SBATCH --account=NAISS2026-4-712
 #SBATCH --partition=alvis
 #SBATCH --output=/mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official/outputs/logs/test_%j.log
 #SBATCH --error=/mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official/outputs/logs/test_err_%j.log
@@ -10,10 +10,14 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 
+module purge 2>/dev/null
+unset PYTHONPATH
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 cd /mimer/NOBACKUP/groups/revar/FNO_PhysicsNeMo_Official
 
 echo "=== 3D FNO SANITY TEST ==="
-apptainer exec --nv \
+apptainer exec --nv --cleanenv \
   /mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif \
   python -u train.py --test --device cuda
 

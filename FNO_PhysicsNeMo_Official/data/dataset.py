@@ -47,7 +47,7 @@ class FNO3DDataset(Dataset):
       [0]  T_norm        current temperature
       [1]  T_set_norm    furnace setpoint
       [2]  region_id/11  region encoding (0=steel, 11=outer_box)
-      [3]  time/4000     normalised time
+      [3]  time/t_total normalised time
       [4]  is_heater     binary heater flag
       [5]  kappa/100     thermal conductivity (W/mK)
       [6]  Cp/1000       heat capacity (J/kgK)
@@ -122,7 +122,14 @@ class FNO3DDataset(Dataset):
                     if region not in grp:
                         continue
                     s, e = region_slices[region]
-                    T_all[:, s:e] = grp[region]["T"][:].astype(np.float32)
+                    T_region = grp[region]["T"][:].astype(np.float32)
+                    # NaN safety: replace outlier-flagged NaN with regional mean
+                    if np.isnan(T_region).any():
+                        n_nan = int(np.isnan(T_region).sum())
+                        T_region = np.nan_to_num(T_region, nan=float(np.nanmean(T_region)))
+                        if region == 'steel_cylinder':
+                            print(f"  [NaN safety] {region}: {n_nan} NaN -> mean")
+                    T_all[:, s:e] = T_region
 
                 # Build interpolators for static fields (once per sim)
                 # Region one-hot: 12 binary channels
@@ -285,7 +292,7 @@ class FNO3DDataset(Dataset):
         # Normalise
         T_norm = (T_grid_t - self.T_mean) / self.T_std
         Tset_norm = (T_set - self.T_mean) / self.T_std
-        t_norm = t_val / 4000.0
+        t_norm = t_val / self.cfg.t_total
         # Target: T_next normalised (not delta_T!)
         # Predicting full temperature field gives much stronger loss signal
         dT = T_grid_tp1 - T_grid_t  # keep for reference
