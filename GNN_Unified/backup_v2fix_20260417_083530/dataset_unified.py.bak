@@ -11,7 +11,6 @@ import torch
 from torch_geometric.data import Data
 from scipy.spatial import cKDTree
 import h5py
-from configs.base_config import REGION_MATERIALS
 
 REGION_IDS = {
     "steel_cylinder": 0,
@@ -67,12 +66,6 @@ class UnifiedDataset(torch.utils.data.Dataset):
                         continue
                     coords = grp[region]["coords"][:].astype(np.float32)
                     T_array = grp[region]["T"][:].astype(np.float32)
-                    # NaN safety: replace outlier-flagged NaN with regional mean
-                    if np.isnan(T_array).any():
-                        n_nan = int(np.isnan(T_array).sum())
-                        T_array = np.nan_to_num(T_array, nan=float(np.nanmean(T_array)))
-                        if region == 'steel_cylinder':
-                            print(f"  [NaN safety] case_{case_idx:03d} {region}: {n_nan} NaN -> mean")
                     n_nodes = coords.shape[0]
                     rid = REGION_IDS.get(region, 0)
 
@@ -111,39 +104,20 @@ class UnifiedDataset(torch.utils.data.Dataset):
                 })
 
         n_sims = len(self._simulations)
-        # stratified by T_set — deterministic, reproducible
-        import random as _rand
-        _by_tset = {}
-        for _i, _s in enumerate(self._simulations):
-            _by_tset.setdefault(float(_s["T_set"]), []).append(_i)
+        n_test = max(1, int(n_sims * cfg.test_fraction))
+        n_val = max(1, int(n_sims * cfg.val_fraction))
+        n_train = n_sims - n_val - n_test
 
-        _train, _val, _test = [], [], []
-        _rng = _rand.Random(42)
-        for _tset in sorted(_by_tset):
-            _idxs = _by_tset[_tset][:]
-            _rng.shuffle(_idxs)
-            _n = len(_idxs)
-            _n_test = max(1, int(round(_n * cfg.test_fraction))) if _n >= 3 else 0
-            _n_val  = max(1, int(round(_n * cfg.val_fraction)))  if _n >= 2 else 0
-            if _n - _n_test - _n_val < 1:
-                _n_val = max(0, _n - _n_test - 1)
-            _test.extend(_idxs[:_n_test])
-            _val.extend(_idxs[_n_test:_n_test + _n_val])
-            _train.extend(_idxs[_n_test + _n_val:])
+        import random
+from configs.base_config import REGION_MATERIALS
+        shuffled = list(range(n_sims))
+        random.Random(42).shuffle(shuffled)
 
-        # expose the canonical ordering (train first, then val, then test) for normalisation
-        shuffled = _train + _val + _test
-        n_train = len(_train)
-        n_val = len(_val)
-        n_test = len(_test)
-
-        split_map = {"train": _train, "val": _val, "test": _test}
-        print(f"  [stratified split] train={len(_train)} val={len(_val)} test={len(_test)}")
-        for _tset in sorted(_by_tset):
-            _tr = sum(1 for i in _train if float(self._simulations[i]["T_set"]) == _tset)
-            _vl = sum(1 for i in _val   if float(self._simulations[i]["T_set"]) == _tset)
-            _te = sum(1 for i in _test  if float(self._simulations[i]["T_set"]) == _tset)
-            print(f"    T_set={_tset:.0f}K  train={_tr} val={_vl} test={_te}")
+        split_map = {
+            "train": shuffled[:n_train],
+            "val": shuffled[n_train:n_train + n_val],
+            "test": shuffled[n_train + n_val:],
+        }
         self.sim_indices = split_map[split]
 
         # Normalisation from training data
@@ -314,28 +288,6 @@ class UnifiedDataset(torch.utils.data.Dataset):
                 is_heater_feat[o:o+n] = 1.0
 
         # ALL 16 node features — future-proof for varying cx/cz/radius/height
-        # Per-region material properties (from REGION_MATERIALS)
-        _kappa_feat = np.zeros(total, dtype=np.float32)
-        _Cp_feat    = np.zeros(total, dtype=np.float32)
-        _rho_feat   = np.zeros(total, dtype=np.float32)
-        for _rname, _rdata in sim["region_data"].items():
-            _o = _rdata["offset"]; _n = _rdata["n_cells"]
-            _mat = REGION_MATERIALS.get(_rname, {"kappa": 80.0, "Cp": 450.0, "rho": 7800.0})
-            _kappa_feat[_o:_o+_n] = _mat["kappa"] / 100.0
-            _Cp_feat[_o:_o+_n]    = _mat["Cp"] / 1000.0
-            _rho_feat[_o:_o+_n]   = _mat["rho"] / 10000.0
-
-        # Raw (unscaled) per-node material arrays for physics loss
-        _kappa_raw = np.zeros(total, dtype=np.float32)
-        _Cp_raw    = np.zeros(total, dtype=np.float32)
-        _rho_raw   = np.zeros(total, dtype=np.float32)
-        for _rname, _rdata in sim["region_data"].items():
-            _o = _rdata["offset"]; _n = _rdata["n_cells"]
-            _mat = REGION_MATERIALS.get(_rname, {"kappa": 80.0, "Cp": 450.0, "rho": 7800.0})
-            _kappa_raw[_o:_o+_n] = _mat["kappa"]
-            _Cp_raw[_o:_o+_n]    = _mat["Cp"]
-            _rho_raw[_o:_o+_n]   = _mat["rho"]
-
         node_feats = np.column_stack([
             all_coords[:, 0],                                          # [0]  x
             all_coords[:, 1],                                          # [1]  y
@@ -350,15 +302,27 @@ class UnifiedDataset(torch.utils.data.Dataset):
             np.full(total, sim["cz"] / 0.39, dtype=np.float32),        # [10] cz
             np.full(total, sim["radius"] / 0.10, dtype=np.float32),    # [11] radius
             np.full(total, sim["height"] / 0.20, dtype=np.float32),    # [12] height
-            _kappa_feat,    # [13] kappa  (per-region, /100)
-            _Cp_feat,       # [14] Cp     (per-region, /1000)
-            _rho_feat,      # [15] rho    (per-region, /10000)
+            _kappa_per_node = np.zeros(total, dtype=np.float32)
+            _Cp_per_node    = np.zeros(total, dtype=np.float32)
+            _rho_per_node   = np.zeros(total, dtype=np.float32)
+            for _rname, _rdata in sim["region_data"].items():
+                _o = _rdata["offset"]; _n = _rdata["n_cells"]
+                _mat = REGION_MATERIALS.get(_rname, {"kappa": 80.0, "Cp": 450.0, "rho": 7800.0})
+                _kappa_per_node[_o:_o+_n] = _mat["kappa"]
+                _Cp_per_node[_o:_o+_n]    = _mat["Cp"]
+                _rho_per_node[_o:_o+_n]   = _mat["rho"]
+            # [13] kappa (per-region, normalised by 100)
+            _kappa_per_node / 100.0,
+            # [14] Cp    (per-region, normalised by 1000)
+            _Cp_per_node / 1000.0,
+            # [15] rho   (per-region, normalised by 10000)
+            _rho_per_node / 10000.0,
         ]).astype(np.float32)
 
         # Targets: delta_T normalised
-        T_tp1_norm = ((T_tp1 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
-        T_tp2_norm = ((T_tp2 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
-        T_tp3_norm = ((T_tp3 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
+        dT1 = ((T_tp1 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
+        dT2 = ((T_tp2 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
+        dT3 = ((T_tp3 - self.T_mean) / self.T_std).reshape(-1, 1).astype(np.float32)
 
         # Add noise during training
         if self.split == "train":
@@ -377,9 +341,9 @@ class UnifiedDataset(torch.utils.data.Dataset):
             x=torch.tensor(node_feats, dtype=torch.float32),
             edge_index=edge_index,
             edge_attr=edge_attr.float(),
-            y=torch.tensor(T_tp1_norm, dtype=torch.float32),
-            y2=torch.tensor(T_tp2_norm, dtype=torch.float32),
-            y3=torch.tensor(T_tp3_norm, dtype=torch.float32),
+            y=torch.tensor(dT1, dtype=torch.float32),
+            y2=torch.tensor(dT2, dtype=torch.float32),
+            y3=torch.tensor(dT3, dtype=torch.float32),
             T_current=torch.tensor(T_t, dtype=torch.float32),
             T_next=torch.tensor(T_tp1, dtype=torch.float32),
             T_tp2=torch.tensor(T_tp2, dtype=torch.float32),
@@ -388,9 +352,6 @@ class UnifiedDataset(torch.utils.data.Dataset):
                 np.full(total, T_set, dtype=np.float32), dtype=torch.float32),
             is_heater=torch.tensor(is_heater, dtype=torch.float32),
             region_ids=torch.tensor(all_rids, dtype=torch.long),
-            kappa_raw=torch.tensor(_kappa_raw, dtype=torch.float32),
-            Cp_raw=torch.tensor(_Cp_raw, dtype=torch.float32),
-            rho_raw=torch.tensor(_rho_raw, dtype=torch.float32),
             Y_std=float(self.T_std),
             dT_mean=float(self.dT_mean),
             dT_std=float(self.dT_std),

@@ -1,0 +1,42 @@
+#!/bin/bash
+#SBATCH --job-name=gnn_test1
+#SBATCH --account=NAISS2026-4-712
+#SBATCH --partition=alvis
+#SBATCH --output=/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs/test1_%j.log
+#SBATCH --error=/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs/test1_err_%j.log
+#SBATCH --time=01:30:00
+#SBATCH --gpus-per-node=A100fat:1
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+
+module purge 2>/dev/null
+unset PYTHONPATH
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+mkdir -p /mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs
+mkdir -p /mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/checkpoints_unified
+
+cd /mimer/NOBACKUP/groups/revar/GNN_Unified
+
+echo "============================================================"
+echo "  1-EPOCH SANITY TEST"
+echo "  Purpose: Verify L_cond /10 normalization fix"
+echo "============================================================"
+echo "Start: $(date)"
+echo ""
+echo "Expected after fix:"
+echo "  TrPhys: ~1.0 (was 115 before fix)"
+echo "  TrData: ~0.01 (same as before)"
+echo "  MAE:    ~10K (epoch 1 warmup)"
+echo ""
+
+apptainer exec --nv --cleanenv \
+  /mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif \
+  python -u train_unified.py \
+    --epochs 1 --lr 1e-4 --lam 0.003 --batch 4
+
+echo ""
+echo "============================================================"
+echo "  TEST DONE: $(date)"
+echo "============================================================"

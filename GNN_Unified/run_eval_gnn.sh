@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=gnn_eval
-#SBATCH --account=NAISS2026-4-525
+#SBATCH --account=NAISS2026-4-712
 #SBATCH --partition=alvis
 #SBATCH --output=outputs/logs/eval_%j.log
 #SBATCH --error=outputs/logs/eval_err_%j.log

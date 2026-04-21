@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=gnn_test
-#SBATCH --account=NAISS2026-4-525
+#SBATCH --account=NAISS2026-4-712
 #SBATCH --partition=alvis
 #SBATCH --output=/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs/sanity_%j.log
 #SBATCH --error=/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs/sanity_err_%j.log
@@ -11,9 +11,11 @@
 #SBATCH --cpus-per-task=4
 
 cd /mimer/NOBACKUP/groups/revar/GNN_Unified
+module purge 2>/dev/null
+unset PYTHONPATH
 
 echo "=== SANITY TEST ==="
-apptainer exec --nv \
+apptainer exec --nv --cleanenv \
   /mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif \
   python -u train_unified.py --test --device cuda
 

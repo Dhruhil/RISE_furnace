@@ -29,18 +29,10 @@ REGION_MATERIALS = {
     "heater_8":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
 }
 
-# ========================================================================
-# PHYSICAL CONSTANTS for physics-informed loss
-# ========================================================================
-SIGMA_SB = 5.67e-8            # Stefan-Boltzmann constant, W/(m^2*K^4)
-EMISSIVITY_STEEL = 0.80       # emissivity of oxidized steel (0-1)
-H_CONV = 25.0                 # natural convection coefficient, W/(m^2*K)
-CHAR_THICKNESS = 0.0167         # V/A ratio for cylinder r=50mm, h=100mm (Incropera 2011)
-
 @dataclass
 class BaseConfig:
     dataset_path:   str = f"{_BASE}/dataset_cylinder_features.h5"
-    all_regions_dataset_path: str = f"{_BASE}/GNN_Unified/dataset_v2_all_regions_clean.h5"
+    all_regions_dataset_path: str = f"{_BASE}/GNN_Unified/dataset_all_regions_clean.h5"
     output_dir:     str = f"{_BASE}/GNN_Unified/outputs"
     checkpoint_dir: str = f"{_BASE}/GNN_Unified/outputs/checkpoints"
     log_dir:        str = f"{_BASE}/GNN_Unified/outputs/logs"

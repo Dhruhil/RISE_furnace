@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=gnn_1e4
-#SBATCH --account=NAISS2026-4-525
+#SBATCH --account=NAISS2026-4-712
 #SBATCH --partition=alvis
 #SBATCH --output=/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs/test_1e4_%j.log
 #SBATCH --error=/mimer/NOBACKUP/groups/revar/GNN_Unified/outputs/logs/test_1e4_err_%j.log

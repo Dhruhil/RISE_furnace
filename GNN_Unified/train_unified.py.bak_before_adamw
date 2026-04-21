@@ -38,7 +38,7 @@ def weighted_mse(pred, target, weights):
 # ── Curriculum ────────────────────────────────────────────────────────
 
 def get_physics_lambda(epoch, n_epochs):
-    return 0.001  # balanced 100:1 ratio for smooth convergence, 100x stronger physics (literature-standard PINN weight)
+    return 0.0001  # sweep-winner fallback
 
 def get_pushforward_weight(epoch, n_epochs):
     warmup_end = int(n_epochs * 0.10)
@@ -99,12 +99,11 @@ def physics_loss_unified(pred, batch, T_std_ds, T_mean, dt=10.0):
     lap_T = lap_T / degree.clamp(min=1.0)
 
     dT_dt_cond = alpha * lap_T
-    cond_res = (dT_dt - dT_dt_cond) / 10.0
-    L_cond = (cond_res * non_heater).pow(2).mean()
+    L_cond = ((dT_dt - dT_dt_cond) * non_heater).pow(2).mean()
 
     # 2. CONVECTION — Newton's cooling
     dT_dt_conv = H_CONV * (T_set - T_now) / (rho_cp * delta + 1e-8)
-    conv_res = (dT_dt - dT_dt_conv) / 100.0  # proper scale (dT_dt_conv ~300 K/s)
+    conv_res = (dT_dt - dT_dt_conv) / 10.0
     L_conv_match = (conv_res * non_heater).pow(2).mean()
     overshoot = F.relu(T_next - T_set) * non_heater
     L_overshoot = (overshoot / T_set.clamp(min=300)).pow(2).mean()
@@ -113,7 +112,7 @@ def physics_loss_unified(pred, batch, T_std_ds, T_mean, dt=10.0):
     # 3. RADIATION — Stefan-Boltzmann
     dT_dt_rad = (EMISSIVITY_STEEL * SIGMA_SB *
                  (T_set.pow(4) - T_now.pow(4)) / (rho_cp * delta + 1e-8))
-    rad_res = (dT_dt - dT_dt_rad) / 1000.0  # proper scale (dT_dt_rad ~1000 K/s)
+    rad_res = (dT_dt - dT_dt_rad) / 100.0
     L_rad = (rad_res * non_heater).pow(2).mean()
 
     # 4. ENERGY BALANCE — combined
@@ -137,13 +136,6 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad()
-        
-        # v4 upgrade: Noise injection on temperature channel
-        if model.training:
-            noise_std = 0.01  # ~2.66K in Kelvin
-            batch.x = batch.x.clone()
-            batch.x[:, 3] = batch.x[:, 3] + noise_std * torch.randn_like(batch.x[:, 3])
-        
         heater_mask = batch.is_heater.unsqueeze(-1).bool()
 
         pred1 = model(batch)
@@ -360,7 +352,7 @@ def main():
                              num_workers=4)
 
     model = HeatTreatmentGNN(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)  # v4 upgrade
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=15, factor=0.5, min_lr=1e-6)
     ckpt_mgr = CheckpointManager(
@@ -381,7 +373,7 @@ def main():
         lam = get_physics_lambda(epoch, n_ep) if args.lam is None else args.lam
         ep_start = time.time()
         w2 = get_pushforward_weight(epoch, n_ep)
-        lr = get_warmup_lr(epoch, args.lr, warmup_epochs=max(5, n_ep // 10))
+        lr = get_warmup_lr(epoch, args.lr, warmup_epochs=5)
         for pg in optimizer.param_groups:
             pg['lr'] = lr
 

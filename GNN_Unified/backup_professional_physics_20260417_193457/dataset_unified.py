@@ -67,12 +67,6 @@ class UnifiedDataset(torch.utils.data.Dataset):
                         continue
                     coords = grp[region]["coords"][:].astype(np.float32)
                     T_array = grp[region]["T"][:].astype(np.float32)
-                    # NaN safety: replace outlier-flagged NaN with regional mean
-                    if np.isnan(T_array).any():
-                        n_nan = int(np.isnan(T_array).sum())
-                        T_array = np.nan_to_num(T_array, nan=float(np.nanmean(T_array)))
-                        if region == 'steel_cylinder':
-                            print(f"  [NaN safety] case_{case_idx:03d} {region}: {n_nan} NaN -> mean")
                     n_nodes = coords.shape[0]
                     rid = REGION_IDS.get(region, 0)
 
@@ -325,17 +319,6 @@ class UnifiedDataset(torch.utils.data.Dataset):
             _Cp_feat[_o:_o+_n]    = _mat["Cp"] / 1000.0
             _rho_feat[_o:_o+_n]   = _mat["rho"] / 10000.0
 
-        # Raw (unscaled) per-node material arrays for physics loss
-        _kappa_raw = np.zeros(total, dtype=np.float32)
-        _Cp_raw    = np.zeros(total, dtype=np.float32)
-        _rho_raw   = np.zeros(total, dtype=np.float32)
-        for _rname, _rdata in sim["region_data"].items():
-            _o = _rdata["offset"]; _n = _rdata["n_cells"]
-            _mat = REGION_MATERIALS.get(_rname, {"kappa": 80.0, "Cp": 450.0, "rho": 7800.0})
-            _kappa_raw[_o:_o+_n] = _mat["kappa"]
-            _Cp_raw[_o:_o+_n]    = _mat["Cp"]
-            _rho_raw[_o:_o+_n]   = _mat["rho"]
-
         node_feats = np.column_stack([
             all_coords[:, 0],                                          # [0]  x
             all_coords[:, 1],                                          # [1]  y
@@ -388,9 +371,6 @@ class UnifiedDataset(torch.utils.data.Dataset):
                 np.full(total, T_set, dtype=np.float32), dtype=torch.float32),
             is_heater=torch.tensor(is_heater, dtype=torch.float32),
             region_ids=torch.tensor(all_rids, dtype=torch.long),
-            kappa_raw=torch.tensor(_kappa_raw, dtype=torch.float32),
-            Cp_raw=torch.tensor(_Cp_raw, dtype=torch.float32),
-            rho_raw=torch.tensor(_rho_raw, dtype=torch.float32),
             Y_std=float(self.T_std),
             dT_mean=float(self.dT_mean),
             dT_std=float(self.dT_std),

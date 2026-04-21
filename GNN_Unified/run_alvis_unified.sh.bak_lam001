@@ -35,7 +35,7 @@ echo ""
 apptainer exec --nv --cleanenv \
   /mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif \
   python -u train_unified.py \
-    --epochs 50 --lr 1e-4 --lam 0.003 --batch 4
+    --epochs 50 --lr 1e-4 --lam 0.001 --batch 4
 
 TRAINING_EXIT=$?
 

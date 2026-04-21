@@ -38,7 +38,7 @@ def weighted_mse(pred, target, weights):
 # ── Curriculum ────────────────────────────────────────────────────────
 
 def get_physics_lambda(epoch, n_epochs):
-    return 0.001  # balanced 100:1 ratio for smooth convergence, 100x stronger physics (literature-standard PINN weight)
+    return 0.0005
 
 def get_pushforward_weight(epoch, n_epochs):
     warmup_end = int(n_epochs * 0.10)
@@ -54,74 +54,57 @@ def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
 
 # ── Corrected physics loss ────────────────────────────────────────────
 
-def physics_loss_unified(pred, batch, T_std_ds, T_mean, dt=10.0):
+def physics_loss_unified(pred, batch, T_std_ds, T_mean):
     """
-    Professional physics-informed loss for furnace heat treatment.
-
-    Based on energy conservation:
-        rho*Cp*dT/dt = kappa*Laplacian(T) + h*(T_set-T)/delta + eps*sigma*(T_set^4-T^4)/delta
-
-    Four terms:
-      1. L_cond: Fourier conduction   (per-node alpha = kappa/(rho*Cp))
-      2. L_conv: Newton convection    (h*(T_set-T)/(rho*Cp*delta))
-      3. L_rad:  Stefan-Boltzmann     (eps*sigma*(T_set^4-T^4)/(rho*Cp*delta))
-      4. L_eng:  combined energy balance
+    Corrected physics for furnace heat treatment.
+    Conduction: spatial smoothness via graph Laplacian (scatter on dst)
+    Convection: T <= T_set + must rise during heating
+    Radiation: sign-based penalty at non-heater nodes
+    Equilibrium: dT -> 0 near T_set
     """
-    from configs.base_config import SIGMA_SB, EMISSIVITY_STEEL, H_CONV, CHAR_THICKNESS
-
+    dt = 10.0  # TODO: pass cfg.dt from caller (currently same value)
     device = pred.device
 
-    # Denormalize to Kelvin
-    T_next = pred.squeeze(-1) * T_std_ds + T_mean
-    T_now  = batch.T_current.to(device)
-    dT_dt  = (T_next - T_now) / dt                        # K/s
+    # pred is normalised T_next directly
+    T_next = pred.squeeze(-1) * T_std_ds + T_mean  # caller now passes T_std, T_mean correctly
+    T_now = batch.T_current.to(device)
+    dT_pred = T_next - T_now
+    T_set = batch.T_set_raw.to(device)
+    non_heater = ~batch.is_heater.bool()
+    dT_dt = dT_pred / dt
 
-    # Per-node properties (raw values, SI units)
-    T_set      = batch.T_set_raw.to(device)               # K
-    kappa      = batch.kappa_raw.to(device)               # W/(m.K)
-    Cp         = batch.Cp_raw.to(device)                  # J/(kg.K)
-    rho        = batch.rho_raw.to(device)                 # kg/m^3
-    non_heater = (~batch.is_heater.bool()).float()
-
-    # Derived
-    alpha  = kappa / (rho * Cp + 1e-8)                    # m^2/s
-    rho_cp = rho * Cp                                     # J/(m^3.K)
-    delta  = CHAR_THICKNESS                               # m
-
-    # 1. CONDUCTION — Fourier: dT/dt = alpha * Laplacian(T)
-    src_i, dst_i = batch.edge_index[0], batch.edge_index[1]
+    # 1. CONDUCTION (0.50) — Laplacian smoothness
+    src, dst = batch.edge_index[0], batch.edge_index[1]
     N = T_now.shape[0]
-    T_diff = T_now[dst_i] - T_now[src_i]
-    lap_T  = torch.zeros(N, device=device, dtype=T_now.dtype)
+    T_diff = T_now[dst] - T_now[src]
+    lap_T = torch.zeros(N, device=device, dtype=T_now.dtype)
     degree = torch.zeros(N, device=device, dtype=T_now.dtype)
-    lap_T.scatter_add_(0, dst_i, T_diff)
-    degree.scatter_add_(0, dst_i, torch.ones_like(T_diff))
+    lap_T.scatter_add_(0, dst, T_diff)
+    degree.scatter_add_(0, dst, torch.ones_like(T_diff))
     lap_T = lap_T / degree.clamp(min=1.0)
+    L_cond = ((dT_dt - 0.1 * lap_T) * non_heater.float()).pow(2).mean()
 
-    dT_dt_cond = alpha * lap_T
-    cond_res = (dT_dt - dT_dt_cond) / 10.0
-    L_cond = (cond_res * non_heater).pow(2).mean()
-
-    # 2. CONVECTION — Newton's cooling
-    dT_dt_conv = H_CONV * (T_set - T_now) / (rho_cp * delta + 1e-8)
-    conv_res = (dT_dt - dT_dt_conv) / 100.0  # proper scale (dT_dt_conv ~300 K/s)
-    L_conv_match = (conv_res * non_heater).pow(2).mean()
-    overshoot = F.relu(T_next - T_set) * non_heater
+    # 2. CONVECTION (0.30) — overshoot + heating direction
+    overshoot = F.relu(T_next - T_set) * non_heater.float()
     L_overshoot = (overshoot / T_set.clamp(min=300)).pow(2).mean()
-    L_conv = 0.5 * L_conv_match + 0.5 * L_overshoot
+    heating = (T_now < T_set * 0.99).float() * non_heater.float()
+    wrong_dir = heating * F.relu(T_now - T_next)
+    L_stagnation = (wrong_dir / T_set.clamp(min=300)).pow(2).mean()
+    L_conv = L_overshoot + 0.5 * L_stagnation
 
-    # 3. RADIATION — Stefan-Boltzmann
-    dT_dt_rad = (EMISSIVITY_STEEL * SIGMA_SB *
-                 (T_set.pow(4) - T_now.pow(4)) / (rho_cp * delta + 1e-8))
-    rad_res = (dT_dt - dT_dt_rad) / 1000.0  # proper scale (dT_dt_rad ~1000 K/s)
-    L_rad = (rad_res * non_heater).pow(2).mean()
+    # 3. RADIATION (0.15) — sign-based, non-heater only
+    T_gap = (T_set - T_now).clamp(min=0) * non_heater.float()
+    expected_sign = torch.sign(T_gap)
+    actual_sign = torch.sign(dT_dt)
+    sign_mismatch = F.relu(-expected_sign * actual_sign) * non_heater.float()
+    L_rad = (sign_mismatch * T_gap / T_set.clamp(min=300)).pow(2).mean()
 
-    # 4. ENERGY BALANCE — combined
-    dT_dt_total = dT_dt_cond + dT_dt_conv + dT_dt_rad
-    L_eng = ((dT_dt - dT_dt_total) * non_heater).pow(2).mean() / (T_std_ds ** 2 + 1e-8)
+    # 4. EQUILIBRIUM (0.05) — dT -> 0 near T_set
+    gap = (T_set - T_now).abs()
+    near_eq = torch.exp(-gap / 20.0) * non_heater.float()
+    L_eq = (dT_pred * near_eq).pow(2).mean() / (T_std_ds ** 2 + 1e-8)
 
-    return 0.4 * L_cond + 0.3 * L_conv + 0.2 * L_rad + 0.1 * L_eng
-
+    return 0.5 * L_cond + 0.3 * L_conv + 0.15 * L_rad + 0.05 * L_eq
 
 
 # ── Training ──────────────────────────────────────────────────────────
@@ -137,13 +120,6 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad()
-        
-        # v4 upgrade: Noise injection on temperature channel
-        if model.training:
-            noise_std = 0.01  # ~2.66K in Kelvin
-            batch.x = batch.x.clone()
-            batch.x[:, 3] = batch.x[:, 3] + noise_std * torch.randn_like(batch.x[:, 3])
-        
         heater_mask = batch.is_heater.unsqueeze(-1).bool()
 
         pred1 = model(batch)
@@ -360,7 +336,7 @@ def main():
                              num_workers=4)
 
     model = HeatTreatmentGNN(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)  # v4 upgrade
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=cfg.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=15, factor=0.5, min_lr=1e-6)
     ckpt_mgr = CheckpointManager(
@@ -381,7 +357,7 @@ def main():
         lam = get_physics_lambda(epoch, n_ep) if args.lam is None else args.lam
         ep_start = time.time()
         w2 = get_pushforward_weight(epoch, n_ep)
-        lr = get_warmup_lr(epoch, args.lr, warmup_epochs=max(5, n_ep // 10))
+        lr = get_warmup_lr(epoch, args.lr, warmup_epochs=5)
         for pg in optimizer.param_groups:
             pg['lr'] = lr
 

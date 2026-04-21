@@ -106,7 +106,7 @@ def main():
 
     print(f"\n{'='*80}")
     print(f"  GNN ROLLOUT EVALUATION — Per-Region Accuracy")
-    print(f"  Phase 1: 0-2760s | Phase 2: 2760-3460s")
+    print(f"  Phase 1: 0-3200s | Phase 2: 3200-4000s")
     print(f"{'='*80}\n")
 
     test_ds = UnifiedDataset(cfg.all_regions_dataset_path, cfg, "test", "evaluation")

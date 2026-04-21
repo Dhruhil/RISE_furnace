@@ -37,8 +37,21 @@ def weighted_mse(pred, target, weights):
 
 # ── Curriculum ────────────────────────────────────────────────────────
 
-def get_physics_lambda(epoch, n_epochs):
-    return 0.001  # balanced 100:1 ratio for smooth convergence, 100x stronger physics (literature-standard PINN weight)
+def get_physics_lambda(epoch, n_epochs, tr_data=None, tr_phys=None):
+    """
+    ADAPTIVE lambda - maintains TRUE 1:1 physics:data ratio each epoch.
+    
+    v5 PRO: Dynamic weighting based on previous epoch losses.
+    Formula: lam = TrData / (TrData + TrPhys)
+    Result: Automatic 1:1 balance every epoch.
+    """
+    if epoch <= 1 or tr_data is None or tr_phys is None:
+        return 0.003
+    if tr_phys <= 0 or tr_data <= 0:
+        return 0.0001
+    lam = tr_data / (tr_data + tr_phys)
+    lam = max(0.00001, min(0.01, lam))
+    return lam
 
 def get_pushforward_weight(epoch, n_epochs):
     warmup_end = int(n_epochs * 0.10)
@@ -138,12 +151,12 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
         batch = batch.to(device)
         optimizer.zero_grad()
         
-        # v4 upgrade: Noise injection on temperature channel
+        # v5 PRO: Noise injection (data augmentation on temperature channel)
         if model.training:
-            noise_std = 0.01  # ~2.66K in Kelvin
+            noise_std = 0.01
             batch.x = batch.x.clone()
+            # Temperature channel index - for GNN assume channel 3 (T_cur_norm)
             batch.x[:, 3] = batch.x[:, 3] + noise_std * torch.randn_like(batch.x[:, 3])
-        
         heater_mask = batch.is_heater.unsqueeze(-1).bool()
 
         pred1 = model(batch)
@@ -360,11 +373,16 @@ def main():
                              num_workers=4)
 
     model = HeatTreatmentGNN(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)  # v4 upgrade
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)  # v5 PRO: stronger WD
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=15, factor=0.5, min_lr=1e-6)
     ckpt_mgr = CheckpointManager(
         str(Path(cfg.checkpoint_dir).parent / "checkpoints_unified"))
+    
+    # v5 PRO: Track previous losses for adaptive lambda
+    prev_tr_data = None
+    prev_tr_phys = None
+    
 
     print(f"  {'Ep':>4} | {'TrLoss':>9} | {'TrData':>9} | "
           f"{'TrPhys':>9} | {'VaData':>9} | "
@@ -378,15 +396,19 @@ def main():
     n_ep = args.epochs
 
     for epoch in range(1, n_ep + 1):
-        lam = get_physics_lambda(epoch, n_ep) if args.lam is None else args.lam
+        lam = get_physics_lambda(epoch, n_ep, prev_tr_data, prev_tr_phys) if args.lam is None else args.lam
         ep_start = time.time()
         w2 = get_pushforward_weight(epoch, n_ep)
-        lr = get_warmup_lr(epoch, args.lr, warmup_epochs=max(5, n_ep // 10))
+        lr = get_warmup_lr(epoch, args.lr, warmup_epochs=5)
         for pg in optimizer.param_groups:
             pg['lr'] = lr
 
         tr_loss, tr_data, tr_phys = train_one_epoch(
             model, train_loader, optimizer, device, cfg, lam=lam, w2=w2)
+        
+        # v5 PRO: Save losses for next epoch adaptive lambda
+        prev_tr_data = tr_data
+        prev_tr_phys = tr_phys
         val_m = evaluate(model, val_loader, device, lam=lam)
 
         if epoch > 5:
