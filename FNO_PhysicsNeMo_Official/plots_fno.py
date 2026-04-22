@@ -1,12 +1,16 @@
 """
-FNO Thesis Plots — Clean, Professional Figures.
-Master's Thesis: Simulating Heat Treatment using OpenFOAM and AI
+FNO Thesis Plots — clean, professional figures for the Master's Thesis.
 
 Generates:
-  1. Training curves (4-panel: data loss, MAE, curriculum, train-val gap)
-  2. Rollout temperature comparison (predicted vs ground truth)
-  3. Per-region MAE bar chart (from rollout evaluation)
-  4. Inference speed comparison (OpenFOAM vs FNO vs GNN)
+  1. Training curves       → fno_training_curves.png
+  2. Validation R²         → fno_r2_curve.png
+  3. Rollout T(t) vs GT    → fno_rollout_comparison.png  (steel + air only)
+  4. Per-region MAE        → fno_per_region_mae.png      (steel + air only)
+  5. Speed comparison      → fno_speed_comparison.png    (OpenFOAM vs FNO vs GNN)
+
+Focus regions: steel_cylinder, inner_box (primary engineering interest).
+Terminology: "In-horizon" (200-2760s, training time range) and
+             "Extrapolation" (2760-3460s, beyond training horizon).
 """
 import sys, json, re, glob
 from pathlib import Path
@@ -17,176 +21,164 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 sys.path.insert(0, ".")
+from configs.fno_config import CONFIG
 
 OUT = "outputs/plots"
 Path(OUT).mkdir(parents=True, exist_ok=True)
 
-# Thesis-quality settings
+# Thesis-quality rcParams
 plt.rcParams.update({
-    'font.size': 12,
-    'axes.labelsize': 13,
-    'axes.titlesize': 14,
-    'legend.fontsize': 10,
-    'xtick.labelsize': 11,
-    'ytick.labelsize': 11,
-    'figure.dpi': 150,
-    'savefig.dpi': 300,
-    'axes.grid': True,
-    'grid.alpha': 0.3,
-    'lines.linewidth': 1.5,
+    'font.size':        12,
+    'axes.labelsize':   13,
+    'axes.titlesize':   14,
+    'legend.fontsize':  10,
+    'xtick.labelsize':  11,
+    'ytick.labelsize':  11,
+    'figure.dpi':       150,
+    'savefig.dpi':      300,
+    'axes.grid':        True,
+    'grid.alpha':       0.3,
+    'lines.linewidth':  1.8,
 })
 
+# Consistent colour palette
+C_TRAIN  = '#3266ad'  # blue   — OpenFOAM / training / truth
+C_VAL    = '#E24B4A'  # red    — validation / predictions
+C_STEEL  = '#1D9E75'  # green  — steel cylinder
+C_AIR    = '#D85A30'  # orange — inner_box air
+C_ACCENT = '#7F77DD'  # purple — accents / curriculum
 
+TRAIN_END = CONFIG.train_time_end      # 2760
+PRED_END  = CONFIG.predict_time_end    # 3460
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Training log parser
+# ──────────────────────────────────────────────────────────────────────────
 def parse_training_log(log_path):
-    """Parse FNO training log — captures all columns including Steel MAE."""
-    epochs, tr_loss, tr_data, tr_phys = [], [], [], []
-    va_wloss, va_data, mae, steel_mae, r2, lam, w2 = [], [], [], [], [], [], []
-
+    """Extract per-epoch metrics from FNO training log."""
+    rows = {
+        "epoch": [], "tr_data": [], "va_data": [],
+        "mae": [], "steel_mae": [], "r2": [], "w2": [],
+    }
+    pat = re.compile(
+        r'\s*(\d+)\s*\|'           # epoch
+        r'\s*([\d.]+)\s*\|'        # TrWLoss
+        r'\s*([\d.]+)\s*\|'        # TrData
+        r'\s*[\d.]+\s*\|'          # TrPhys (skip)
+        r'\s*[\d.]+\s*\|'          # VaWLoss (skip)
+        r'\s*([\d.]+)\s*\|'        # VaData
+        r'\s*([\d.]+)\s*\|'        # MAE
+        r'\s*([\d.]+)\s*\|'        # Steel MAE
+        r'\s*([\d.]+)\s*\|'        # R2
+        r'\s*[\d.]+\s*\|'          # lam (skip)
+        r'\s*([\d.]+)'             # w2
+    )
     with open(log_path) as f:
         for line in f:
-            line = line.strip()
-            # Match: "  1 | 0.00922 | 0.00866 | 1.13748 | 0.00182 | 0.00232 | 13.03 | 2.89 | 0.9907 | 0.0005 | 0.00 | 838s"
-            m = re.match(
-                r'\s*(\d+)\s*\|'           # epoch
-                r'\s*([\d.]+)\s*\|'        # TrWLoss
-                r'\s*([\d.]+)\s*\|'        # TrData
-                r'\s*([\d.]+)\s*\|'        # TrPhys
-                r'\s*([\d.]+)\s*\|'        # VaWLoss
-                r'\s*([\d.]+)\s*\|'        # VaData
-                r'\s*([\d.]+)\s*\|'        # MAE
-                r'\s*([\d.]+)\s*\|'        # Steel MAE
-                r'\s*([\d.]+)\s*\|'        # R2
-                r'\s*([\d.]+)\s*\|'        # lam
-                r'\s*([\d.]+)',            # w2
-                line
-            )
-            if m:
-                epochs.append(int(m.group(1)))
-                tr_loss.append(float(m.group(2)))
-                tr_data.append(float(m.group(3)))
-                tr_phys.append(float(m.group(4)))
-                va_wloss.append(float(m.group(5)))
-                va_data.append(float(m.group(6)))
-                mae.append(float(m.group(7)))
-                steel_mae.append(float(m.group(8)))
-                r2.append(float(m.group(9)))
-                lam.append(float(m.group(10)))
-                w2.append(float(m.group(11)))
-
-    return {
-        "epoch": np.array(epochs),
-        "tr_loss": np.array(tr_loss), "tr_data": np.array(tr_data),
-        "tr_phys": np.array(tr_phys),
-        "va_wloss": np.array(va_wloss), "va_data": np.array(va_data),
-        "mae": np.array(mae), "steel_mae": np.array(steel_mae),
-        "r2": np.array(r2), "lam": np.array(lam), "w2": np.array(w2),
-    }
+            m = pat.match(line.strip())
+            if not m:
+                continue
+            rows["epoch"].append(int(m.group(1)))
+            rows["tr_data"].append(float(m.group(3)))
+            rows["va_data"].append(float(m.group(4)))
+            rows["mae"].append(float(m.group(5)))
+            rows["steel_mae"].append(float(m.group(6)))
+            rows["r2"].append(float(m.group(7)))
+            rows["w2"].append(float(m.group(8)))
+    return {k: np.array(v) for k, v in rows.items()}
 
 
+def find_training_log():
+    """Locate the FNO training log — tries known locations."""
+    candidates = (
+        glob.glob("outputs/FINAL_RUN_v4_*/logs/fno_v4_*.log")
+        + glob.glob("outputs/logs/fno_v4_*.log")
+        + glob.glob("outputs/logs/fno3d_*.log")
+    )
+    # Filter out error logs
+    candidates = [c for c in candidates if "err" not in Path(c).name]
+    if not candidates:
+        return None
+    # Most recent
+    return max(candidates, key=lambda p: Path(p).stat().st_mtime)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Plot 1: Training curves (2 panels)
+# ──────────────────────────────────────────────────────────────────────────
 def plot_training_curves(d):
-    """Plot 1: 4-panel training curves — thesis quality."""
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("3D FNO Training Curves", fontsize=16, fontweight='bold', y=0.98)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    best_epoch = int(d["epoch"][np.argmin(d["mae"])])
-    best_mae = float(np.min(d["mae"]))
+    best_ep    = int(d["epoch"][np.argmin(d["mae"])])
+    best_mae   = float(np.min(d["mae"]))
     best_steel = float(d["steel_mae"][np.argmin(d["mae"])])
 
-    # ── 1a: Data loss (train vs val) ──
-    ax = axes[0, 0]
-    ax.plot(d["epoch"], d["tr_data"], color='#3266ad', alpha=0.8, label='Train data loss')
-    ax.plot(d["epoch"], d["va_data"], color='#E24B4A', alpha=0.8, label='Val data loss')
-    # Mark pushforward start
-    pf_start = d["epoch"][d["w2"] > 0]
-    if len(pf_start) > 0:
-        ax.axvline(x=pf_start[0], color='#7F77DD', linestyle='--', alpha=0.5,
-                   label=f'Pushforward starts (ep {pf_start[0]})')
+    # ── (a) Train vs Val data loss (log scale) ─────────────────
+    ax = axes[0]
+    ax.semilogy(d["epoch"], d["tr_data"], color=C_TRAIN, alpha=0.9, label='Training')
+    ax.semilogy(d["epoch"], d["va_data"], color=C_VAL,   alpha=0.9, label='Validation')
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("Data loss (MSE)")
-    ax.set_title("(a) Train vs validation loss")
+    ax.set_ylabel("Data loss (MSE, normalised)")
+    ax.set_title("(a) Training vs validation loss")
     ax.legend(loc='upper right', framealpha=0.9)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
-    # ── 1b: MAE and Steel MAE ──
-    ax = axes[0, 1]
-    ax.plot(d["epoch"], d["mae"], color='#1D9E75', alpha=0.8, label='Overall MAE')
-    ax.plot(d["epoch"], d["steel_mae"], color='#D85A30', alpha=0.6, label='Steel MAE')
-    ax.axhline(y=best_mae, color='#1D9E75', linestyle=':', alpha=0.4)
-    ax.annotate(f'Best: {best_mae:.1f}K (ep {best_epoch})',
-                xy=(best_epoch, best_mae), fontsize=9,
-                xytext=(best_epoch + len(d["epoch"])//10, best_mae + 1),
-                arrowprops=dict(arrowstyle='->', color='#1D9E75', alpha=0.6),
-                color='#1D9E75')
+    # ── (b) Validation MAE — overall + steel ──────────────────
+    ax = axes[1]
+    ax.plot(d["epoch"], d["mae"],       color=C_VAL,   alpha=0.9, label='Overall MAE')
+    ax.plot(d["epoch"], d["steel_mae"], color=C_STEEL, alpha=0.9, label='Steel cylinder MAE')
+    ax.axvline(best_ep, color='gray', linestyle=':', alpha=0.5)
+    ax.annotate(f'Best: overall {best_mae:.2f} K, steel {best_steel:.2f} K\n(epoch {best_ep})',
+                xy=(best_ep, best_mae),
+                xytext=(best_ep + len(d["epoch"]) * 0.1, best_mae + 3),
+                arrowprops=dict(arrowstyle='->', color='gray'),
+                fontsize=10, color='#444')
     ax.set_xlabel("Epoch")
     ax.set_ylabel("MAE [K]")
-    ax.set_title("(b) Validation MAE")
+    ax.set_title("(b) Validation MAE over training")
     ax.legend(loc='upper right', framealpha=0.9)
-    ax.set_ylim(0, max(d["mae"].max(), d["steel_mae"].max()) * 1.1)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
-    # ── 1c: Training curriculum ──
-    ax = axes[1, 0]
-    ax.plot(d["epoch"], d["w2"], color='#7F77DD', linewidth=2, label='Pushforward $w_2$')
-    ax.plot(d["epoch"], d["lam"] * 1000, color='#BA7517', linewidth=2,
-            linestyle='--', label=r'Physics $\lambda$ (×1000)')
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Weight")
-    ax.set_title("(c) Training curriculum schedule")
-    ax.legend(loc='center right', framealpha=0.9)
-    ax.set_ylim(-0.05, max(d["w2"].max(), d["lam"].max() * 1000) * 1.15)
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-
-    # ── 1d: Train-val gap ──
-    ax = axes[1, 1]
-    gap = ((d["va_data"] - d["tr_data"]) / (d["tr_data"] + 1e-10)) * 100
-    ax.plot(d["epoch"], gap, color='#3266ad', alpha=0.8)
-    ax.fill_between(d["epoch"], 0, gap, color='#3266ad', alpha=0.08)
-    ax.axhline(y=np.mean(gap[-10:]), color='#3266ad', linestyle=':', alpha=0.4,
-               label=f'Last 10 avg: {np.mean(gap[-10:]):.0f}%')
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Gap [%]")
-    ax.set_title("(d) Train-validation gap")
-    ax.legend(loc='upper right', framealpha=0.9)
-    ax.set_ylim(0, max(gap) * 1.2)
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.tight_layout()
     path = f"{OUT}/fno_training_curves.png"
-    plt.savefig(path)
+    plt.savefig(path, bbox_inches='tight')
     print(f"  Saved: {path}")
     plt.close()
 
 
+# ──────────────────────────────────────────────────────────────────────────
+#  Plot 2: R² curve
+# ──────────────────────────────────────────────────────────────────────────
 def plot_r2_curve(d):
-    """Plot 2: R² over epochs."""
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(d["epoch"], d["r2"], color='#1D9E75', linewidth=2)
+    ax.plot(d["epoch"], d["r2"], color=C_STEEL, linewidth=2)
+    best_ep = int(d["epoch"][np.argmax(d["r2"])])
+    best_r2 = float(np.max(d["r2"]))
+    ax.annotate(f'Best: {best_r2:.4f} (epoch {best_ep})',
+                xy=(best_ep, best_r2),
+                xytext=(best_ep + len(d["epoch"]) * 0.1, best_r2 - 0.003),
+                arrowprops=dict(arrowstyle='->', color='gray'),
+                fontsize=11, color=C_STEEL)
     ax.set_xlabel("Epoch")
     ax.set_ylabel("R²")
     ax.set_title("Validation R² over training")
     ax.set_ylim(min(d["r2"].min() - 0.002, 0.985), 1.001)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
-    best_r2_epoch = int(d["epoch"][np.argmax(d["r2"])])
-    best_r2 = float(np.max(d["r2"]))
-    ax.annotate(f'Best: {best_r2:.4f} (ep {best_r2_epoch})',
-                xy=(best_r2_epoch, best_r2), fontsize=10,
-                xytext=(best_r2_epoch + len(d["epoch"])//10, best_r2 - 0.003),
-                arrowprops=dict(arrowstyle='->', color='#1D9E75'),
-                color='#1D9E75')
-
     plt.tight_layout()
     path = f"{OUT}/fno_r2_curve.png"
-    plt.savefig(path)
+    plt.savefig(path, bbox_inches='tight')
     print(f"  Saved: {path}")
     plt.close()
 
 
+# ──────────────────────────────────────────────────────────────────────────
+#  Plot 3: Rollout T(t) — FNO vs OpenFOAM (steel + air only)
+# ──────────────────────────────────────────────────────────────────────────
 def plot_rollout_comparison():
-    """Plot 3: Rollout — predicted vs ground truth temperature."""
-    from configs.fno_config import CONFIG
-    from data.dataset import FNO3DDataset, REGION_IDS, HEATER_REGIONS
     import torch
+    from data.dataset import FNO3DDataset
     from models.fno_model import HeatTreatmentFNO3D
     from models.rollout import rollout_fno3d
     from scipy.interpolate import NearestNDInterpolator
@@ -200,216 +192,214 @@ def plot_rollout_comparison():
     sim_i = test_ds.sim_indices[0]
     sim = test_ds._simulations[sim_i]
     start_t = 20
-    n_times = sim["n_times"]
 
-    print(f"  Running rollout for sim {sim_i} (T_set={sim['T_set']:.0f}K)...")
-    T_pred_grids, T_true_grids = rollout_fno3d(model, test_ds, sim_i, device, start_t)
+    print(f"  Running rollout for test sim {sim_i} (T_set={sim['T_set']:.0f} K)...")
+    T_pred_grids, _ = rollout_fno3d(model, test_ds, sim_i, device, start_t)
     n_steps = T_pred_grids.shape[0]
     times = sim["times"][start_t:start_t + n_steps]
     grid_points = test_ds.grid_points
 
     def get_region_temps(region_name):
-        slc = sim["region_slices"][region_name]
-        s, e = slc
+        s, e = sim["region_slices"][region_name]
         coords = sim["coords"][s:e]
-        n_cells = coords.shape[0]
-        T_pred = np.zeros((n_steps, n_cells), dtype=np.float32)
-        T_true = np.zeros((n_steps, n_cells), dtype=np.float32)
+        T_pred = np.zeros((n_steps, coords.shape[0]), dtype=np.float32)
+        T_true = np.zeros_like(T_pred)
         for step in range(n_steps):
-            interp_p = NearestNDInterpolator(grid_points, T_pred_grids[step].ravel())
-            T_pred[step] = interp_p(coords)
             t_idx = start_t + step
-            if t_idx < n_times:
-                T_true[step] = sim["T_all"][t_idx, s:e]
+            if t_idx >= sim["n_times"]:
+                break
+            T_true[step] = sim["T_all"][t_idx, s:e]
+            interp = NearestNDInterpolator(grid_points, T_pred_grids[step].ravel())
+            T_pred[step] = interp(coords)
         return T_pred, T_true
 
     steel_pred, steel_true = get_region_temps("steel_cylinder")
-    air_pred, air_true = get_region_temps("inner_box")
-    outer_pred, outer_true = get_region_temps("outer_box")
+    air_pred,   air_true   = get_region_temps("inner_box")
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(f"3D FNO Autoregressive Rollout — Test Sim {sim_i}", fontsize=14, fontweight='bold', y=0.98)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    fig.suptitle(f"Autoregressive Rollout — Test Simulation {sim_i} "
+                 f"(T$_{{set}}$ = {sim['T_set']:.0f} K)",
+                 fontsize=15, fontweight='bold', y=0.995)
 
-    ax = axes[0, 0]
-    s_pred_mean = steel_pred.mean(axis=1)
-    s_true_mean = steel_true.mean(axis=1)
-    ax.fill_between(times, steel_true.min(axis=1), steel_true.max(axis=1), alpha=0.1, color='#3266ad')
-    ax.fill_between(times, steel_pred.min(axis=1), steel_pred.max(axis=1), alpha=0.1, color='#E24B4A')
-    ax.plot(times, s_true_mean, '#3266ad', linewidth=2, label='OpenFOAM')
-    ax.plot(times, s_pred_mean, '#E24B4A', linewidth=2, linestyle='--', label='FNO prediction')
-    ax.axvline(x=3200, color='gray', linestyle=':', alpha=0.5)
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Temperature [K]")
-    ax.set_title("(a) Steel cylinder")
-    ax.legend(framealpha=0.9)
+    def _plot_region(ax_T, ax_err, T_pred, T_true, label, color):
+        pred_mean = T_pred.mean(axis=1)
+        true_mean = T_true.mean(axis=1)
 
-    ax = axes[0, 1]
-    error = s_pred_mean - s_true_mean
-    ax.plot(times, error, '#E24B4A', linewidth=1.5)
-    ax.axhline(y=0, color='black', linewidth=0.5)
-    ax.axhline(y=10, color='gray', linestyle='--', alpha=0.4, label='+-10K')
-    ax.axhline(y=-10, color='gray', linestyle='--', alpha=0.4)
-    ax.axvline(x=3200, color='gray', linestyle=':', alpha=0.5)
-    ax.fill_between(times, -10, 10, alpha=0.04, color='green')
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Error [K]")
-    ax.set_title("(b) Steel cylinder — error")
-    ax.legend(framealpha=0.9)
+        ax_T.fill_between(times, T_true.min(axis=1), T_true.max(axis=1),
+                          alpha=0.10, color=C_TRAIN)
+        ax_T.fill_between(times, T_pred.min(axis=1), T_pred.max(axis=1),
+                          alpha=0.10, color=C_VAL)
+        ax_T.plot(times, true_mean, color=C_TRAIN, linewidth=2, label='OpenFOAM (truth)')
+        ax_T.plot(times, pred_mean, color=C_VAL,   linewidth=2, linestyle='--', label='FNO prediction')
+        ax_T.axvline(TRAIN_END, color='gray', linestyle=':', alpha=0.6,
+                     label=f'End of training horizon ({TRAIN_END:.0f}s)')
+        ax_T.set_xlabel("Time [s]")
+        ax_T.set_ylabel("Temperature [K]")
+        ax_T.set_title(f"(a) {label} — T(t)" if label == "Steel cylinder" else f"(c) {label} — T(t)")
+        ax_T.legend(loc='lower right', framealpha=0.9, fontsize=9)
 
-    ax = axes[1, 0]
-    ax.plot(times, air_true.mean(axis=1), '#3266ad', linewidth=2, label='OpenFOAM')
-    ax.plot(times, air_pred.mean(axis=1), '#E24B4A', linewidth=2, linestyle='--', label='FNO')
-    ax.axvline(x=3200, color='gray', linestyle=':', alpha=0.5)
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Temperature [K]")
-    ax.set_title("(c) Inner box (air)")
-    ax.legend(framealpha=0.9)
+        err = pred_mean - true_mean
+        ax_err.plot(times, err, color=color, linewidth=1.6)
+        ax_err.axhline(0, color='black', linewidth=0.5)
+        ax_err.axhline( 10, color='gray', linestyle='--', alpha=0.4, label='±10 K')
+        ax_err.axhline(-10, color='gray', linestyle='--', alpha=0.4)
+        ax_err.fill_between(times, -10, 10, alpha=0.05, color='green')
+        ax_err.axvline(TRAIN_END, color='gray', linestyle=':', alpha=0.6)
+        ax_err.set_xlabel("Time [s]")
+        ax_err.set_ylabel("Error [K]")
+        ax_err.set_title(f"(b) {label} — prediction error" if label == "Steel cylinder"
+                         else f"(d) {label} — prediction error")
+        ax_err.legend(loc='upper left', framealpha=0.9, fontsize=9)
 
-    ax = axes[1, 1]
-    ax.plot(times, outer_true.mean(axis=1), '#3266ad', linewidth=2, label='OpenFOAM')
-    ax.plot(times, outer_pred.mean(axis=1), '#E24B4A', linewidth=2, linestyle='--', label='FNO')
-    ax.axvline(x=3200, color='gray', linestyle=':', alpha=0.5)
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Temperature [K]")
-    ax.set_title("(d) Outer box (walls)")
-    ax.legend(framealpha=0.9)
+    _plot_region(axes[0, 0], axes[0, 1], steel_pred, steel_true, "Steel cylinder", C_STEEL)
+    _plot_region(axes[1, 0], axes[1, 1], air_pred,   air_true,   "Inner box (air)", C_AIR)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
     path = f"{OUT}/fno_rollout_comparison.png"
-    plt.savefig(path)
+    plt.savefig(path, bbox_inches='tight')
     print(f"  Saved: {path}")
     plt.close()
 
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Plot 4: Per-region MAE bar chart (in-horizon vs extrapolation)
+# ──────────────────────────────────────────────────────────────────────────
 def plot_per_region_mae():
-    """Plot 4: Per-region MAE bar chart from rollout evaluation JSON."""
-    json_path = "outputs/evaluation/fno3d_rollout_results.json"
+    json_path = "outputs/evaluation/fno_rollout_results.json"
     if not Path(json_path).exists():
-        print(f"  Skipping per-region plot: {json_path} not found")
+        json_path = "outputs/evaluation/fno3d_rollout_results.json"  # fallback
+    if not Path(json_path).exists():
+        print(f"  Skipping per-region MAE — no evaluation JSON found")
         return
 
     with open(json_path) as f:
-        results = json.load(f)
+        data = json.load(f)
 
-    # Aggregate across test sims
-    region_p1 = {}
-    region_p2 = {}
-    for sim_key, sim_data in results.items():
-        for region, metrics in sim_data.items():
-            if region not in region_p1:
-                region_p1[region] = []
-                region_p2[region] = []
-            region_p1[region].append(metrics["mae_p1"])
-            if metrics["mae_p2"] and not (isinstance(metrics["mae_p2"], float) and
-                                           np.isnan(metrics["mae_p2"])):
-                region_p2[region].append(metrics["mae_p2"])
+    # Handle both old and new JSON shapes
+    per_sim = data.get("per_sim", data)
 
-    # Only non-heater regions
-    plot_regions = ["steel_cylinder", "inner_box", "outer_box"]
-    labels = ["Steel\ncylinder", "Inner box\n(air)", "Outer box\n(walls)"]
-    p1_means = [np.mean(region_p1.get(r, [0])) for r in plot_regions]
-    p2_means = [np.mean(region_p2.get(r, [0])) for r in plot_regions]
+    regions = ["steel_cylinder", "inner_box"]
+    labels = ["Steel cylinder", "Inner box (air)"]
+
+    mae_in, mae_ext = {r: [] for r in regions}, {r: [] for r in regions}
+    for sim_key, sim_data in per_sim.items():
+        if not isinstance(sim_data, dict):
+            continue
+        for region in regions:
+            if region in sim_data:
+                mae_in[region].append(sim_data[region]["mae_p1"])
+                p2 = sim_data[region].get("mae_p2")
+                if p2 is not None and not (isinstance(p2, float) and np.isnan(p2)):
+                    mae_ext[region].append(p2)
+
+    in_means  = [np.mean(mae_in[r])  if mae_in[r]  else 0 for r in regions]
+    in_stds   = [np.std(mae_in[r])   if mae_in[r]  else 0 for r in regions]
+    ext_means = [np.mean(mae_ext[r]) if mae_ext[r] else 0 for r in regions]
+    ext_stds  = [np.std(mae_ext[r])  if mae_ext[r] else 0 for r in regions]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    x = np.arange(len(plot_regions))
+    x = np.arange(len(regions))
     width = 0.35
 
-    bars1 = ax.bar(x - width/2, p1_means, width, label='Phase 1 (0-3200s)',
-                   color='#3266ad', alpha=0.85)
-    bars2 = ax.bar(x + width/2, p2_means, width, label='Phase 2 (3200-4000s)',
-                   color='#D85A30', alpha=0.85)
+    ax.bar(x - width/2, in_means,  width, yerr=in_stds,
+           label=f'In-horizon (200–{TRAIN_END:.0f} s)',
+           color=C_TRAIN, alpha=0.85, capsize=4)
+    ax.bar(x + width/2, ext_means, width, yerr=ext_stds,
+           label=f'Extrapolation ({TRAIN_END:.0f}–{PRED_END:.0f} s)',
+           color=C_VAL,   alpha=0.85, capsize=4)
 
-    # Value labels
-    for bar in bars1:
-        h = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2, h + 1, f'{h:.1f}K',
-                ha='center', fontsize=10, color='#3266ad')
-    for bar in bars2:
-        h = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2, h + 1, f'{h:.1f}K',
-                ha='center', fontsize=10, color='#D85A30')
+    for i, (m, s) in enumerate(zip(in_means, in_stds)):
+        ax.text(i - width/2, m + s + 2, f'{m:.1f} K', ha='center', fontsize=10, color=C_TRAIN)
+    for i, (m, s) in enumerate(zip(ext_means, ext_stds)):
+        ax.text(i + width/2, m + s + 2, f'{m:.1f} K', ha='center', fontsize=10, color=C_VAL)
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
-    ax.set_ylabel("MAE [K]")
-    ax.set_title("Autoregressive Rollout MAE by Region")
-    ax.legend(framealpha=0.9)
-    ax.set_ylim(0, max(max(p1_means), max(p2_means)) * 1.3)
+    ax.set_ylabel("Rollout MAE [K]")
+    ax.set_title("Autoregressive rollout accuracy by region")
+    ax.legend(framealpha=0.9, loc='upper left')
+    ymax = max(max(in_means), max(ext_means)) + max(max(in_stds), max(ext_stds))
+    ax.set_ylim(0, ymax * 1.3 if ymax > 0 else 1)
 
     plt.tight_layout()
     path = f"{OUT}/fno_per_region_mae.png"
-    plt.savefig(path)
+    plt.savefig(path, bbox_inches='tight')
     print(f"  Saved: {path}")
     plt.close()
 
 
+# ──────────────────────────────────────────────────────────────────────────
+#  Plot 5: Speed comparison
+# ──────────────────────────────────────────────────────────────────────────
 def plot_speed_comparison():
-    """Plot 5: Speed comparison — OpenFOAM vs FNO vs GNN."""
+    methods    = ["OpenFOAM\n(CFD reference)",
+                  "GNN\n(MeshGraphNet)",
+                  "3D FNO\n(this work)"]
+    times_sec  = [3 * 3600, 71.3, 2.66]        # full simulation time
+    colors     = ['#73726c', '#3266ad', '#1D9E75']
+    speedups   = [1, 3*3600/71.3, 3*3600/2.66]
+
     fig, ax = plt.subplots(figsize=(8, 5))
-
-    methods = ["OpenFOAM\n(CFD)", "GNN\n(MeshGraphNet)", "3D FNO\n(Neural Operator)"]
-    times_sec = [3 * 3600, 71.3, 1.73]
-    colors = ['#73726c', '#3266ad', '#1D9E75']
-    speedups = [1, 3*3600/71.3, 3*3600/1.73]
-
-    bars = ax.bar(methods, times_sec, color=colors, width=0.5, alpha=0.85)
-    ax.set_ylabel("Time per full simulation [seconds]")
-    ax.set_title("Simulation Speed Comparison")
+    bars = ax.bar(methods, times_sec, color=colors, width=0.5, alpha=0.9)
+    ax.set_ylabel("Wall-clock time per full simulation [s]")
+    ax.set_title("Inference speed — OpenFOAM vs neural surrogates")
     ax.set_yscale('log')
 
-    for i, (bar, t, s) in enumerate(zip(bars, times_sec, speedups)):
-        if t > 3600:
-            label = f"{t/3600:.0f}h"
-        elif t > 60:
-            label = f"{t:.0f}s"
+    for bar, t, s in zip(bars, times_sec, speedups):
+        if t >= 3600:
+            label = f"{t/3600:.1f} h"
+        elif t >= 60:
+            label = f"{t:.0f} s"
         else:
-            label = f"{t:.1f}s"
-        ax.text(bar.get_x() + bar.get_width()/2, t * 2.5, label,
+            label = f"{t:.2f} s"
+        ax.text(bar.get_x() + bar.get_width()/2, t * 1.6, label,
                 ha='center', fontsize=12, fontweight='500')
         if s > 1:
-            ax.text(bar.get_x() + bar.get_width()/2, t * 0.3,
-                    f'{s:.0f}× faster', ha='center', fontsize=9, color='white',
-                    fontweight='500')
+            ax.text(bar.get_x() + bar.get_width()/2, t * 0.35,
+                    f'{s:,.0f}× faster', ha='center', fontsize=10, color='white',
+                    fontweight='600')
 
     plt.tight_layout()
     path = f"{OUT}/fno_speed_comparison.png"
-    plt.savefig(path)
+    plt.savefig(path, bbox_inches='tight')
     print(f"  Saved: {path}")
     plt.close()
 
 
+# ──────────────────────────────────────────────────────────────────────────
+#  Main
+# ──────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("\n  === FNO THESIS PLOTS ===\n")
 
-    # Find latest training log
-    logs = sorted([l for l in glob.glob("outputs/logs/fno3d_*.log") if "err" not in l])
-    if logs:
-        log_path = logs[-1]
-        print(f"  Parsing: {log_path}")
+    log_path = find_training_log()
+    if log_path:
+        print(f"  Training log: {log_path}")
         d = parse_training_log(log_path)
         if len(d["epoch"]) > 0:
-            print(f"  Found {len(d['epoch'])} epochs")
-            print(f"  Best MAE: {np.min(d['mae']):.2f}K (epoch {d['epoch'][np.argmin(d['mae'])]})")
-            print(f"  Best Steel MAE: {np.min(d['steel_mae']):.2f}K")
-            print(f"  Best R²: {np.max(d['r2']):.4f}")
-            print()
+            print(f"  Epochs parsed:     {len(d['epoch'])}")
+            print(f"  Best overall MAE:  {np.min(d['mae']):.2f} K "
+                  f"(epoch {d['epoch'][np.argmin(d['mae'])]})")
+            print(f"  Best steel MAE:    {np.min(d['steel_mae']):.2f} K")
+            print(f"  Best R²:           {np.max(d['r2']):.4f}\n")
             plot_training_curves(d)
             plot_r2_curve(d)
         else:
-            print("  WARNING: No epoch data found in log")
+            print("  WARNING: no epoch data parsed from training log\n")
     else:
-        print("  WARNING: No training log found")
+        print("  WARNING: no training log found — skipping training curves\n")
 
-    # Speed comparison (always works)
+    # Speed comparison (no data needed)
     plot_speed_comparison()
 
     # Per-region MAE from evaluation JSON
     plot_per_region_mae()
 
-    # Rollout comparison (needs GPU + trained model)
+    # Rollout comparison (needs GPU)
     try:
         plot_rollout_comparison()
     except Exception as e:
         print(f"  Rollout plot skipped: {e}")
-        print(f"  (Run on GPU: sbatch run_plots.sh)")
+        print(f"  (Make sure you run this on a GPU with best_model.pt available)")
 
-    print(f"\n  All plots saved to: {OUT}/")
+    print(f"\n  All plots saved to: {OUT}/\n")

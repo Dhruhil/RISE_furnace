@@ -428,11 +428,11 @@ def main():
     print(f"  Loading best model for autoregressive rollout...")
     best_model = HeatTreatmentFNO3D.load(ckpt_mgr.best_path, cfg, str(device))
     try:
-        from evaluation.evaluate_fno3d import run_fno3d_evaluation
+        from evaluation.evaluate import run_fno3d_evaluation
         run_fno3d_evaluation(best_model, cfg, device=str(device))
     except Exception as e:
         print(f"  Rollout evaluation failed: {e}")
-        print(f"  Run separately: python evaluation/evaluate_fno3d.py --device {device}")
+        print(f"  Run separately: python evaluation/evaluate.py --device {device}")
 
 
 if __name__ == "__main__":

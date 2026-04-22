@@ -7,8 +7,7 @@
 #SBATCH --time=02:00:00
 #SBATCH --gpus-per-node=A40:1
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
-
+#SBATCH --cpus-per-task=16
 cd /mimer/NOBACKUP/groups/revar/GNN_Unified
 apptainer exec --nv /mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif \
-  python -u evaluation/evaluate_unified.py --device cuda --n_sims 5
+  python -u evaluation/evaluate.py --device cuda
