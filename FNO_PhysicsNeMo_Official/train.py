@@ -265,6 +265,7 @@ def main():
     parser.add_argument("--device", default=None)
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--lam", type=float, default=None)
+    parser.add_argument("--checkpoint_dir", type=str, default=None, help="Override checkpoint output folder")
     args = parser.parse_args()
 
     cfg = CONFIG
@@ -314,7 +315,9 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=15, factor=0.5, min_lr=1e-6)
-    ckpt_mgr = CheckpointManager(cfg.checkpoint_dir)
+    ckpt_dir = args.checkpoint_dir if args.checkpoint_dir else cfg.checkpoint_dir
+    print(f"  Checkpoints will be saved to: {ckpt_dir}")
+    ckpt_mgr = CheckpointManager(ckpt_dir)
 
     print(f"  {'Ep':>4} | {'TrWLoss':>9} | {'TrData':>9} | {'TrPhys':>9} | "
           f"{'VaWLoss':>9} | {'VaData':>9} | "

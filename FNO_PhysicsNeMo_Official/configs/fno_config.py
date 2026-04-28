@@ -71,9 +71,9 @@ class FNOConfig:
 
     # Time
     dt:               float = 10.0
-    t_total:          float = 3460.0
+    t_total: float = 3600.0
     train_time_end:   float = 2760.0
-    predict_time_end: float = 3460.0
+    predict_time_end: float = 3600.0
 
     # Logging
     log_every_n_epochs:  int  = 1
