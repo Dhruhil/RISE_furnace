@@ -16,8 +16,9 @@ from utils.logging import setup_logging
 
 
 def get_physics_lambda(epoch, n_epochs):
-    """Static physics lambda = 0.003 (matches GNN and FNO v4 FINAL)."""
-    return 0.003
+    p = min(1.0, epoch / max(n_epochs, 1))
+    cosine = 0.5 * (1 + math.cos(math.pi * p))
+    return 0.0005 + (0.003 - 0.0005) * cosine
 
 
 def get_pushforward_weight(epoch, n_epochs):
@@ -26,7 +27,7 @@ def get_pushforward_weight(epoch, n_epochs):
     return 1.0 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
 
-def get_warmup_lr(epoch, base_lr, warmup_epochs=20):
+def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
     if epoch <= warmup_epochs:
         return base_lr * (0.1 + 0.9 * epoch / warmup_epochs)
     return base_lr
@@ -42,7 +43,7 @@ def _build_trunk_with_grad(xyz, region_id, is_heater, kappa, Cp, rho):
 
 def train_one_epoch(model, loader, optimizer, criterion, device,
                     T_mean, T_std, grad_clip, w2, lam, dt=10.0,
-                    noise_std=0.01, t_total=3460.0):
+                    noise_std=0.03, t_total=3460.0):
     model.train()
     totals = {"loss":0,"data":0,"phys":0,"cond":0,"conv":0,"rad":0,"overshoot":0,"pf":0}
     n = 0
@@ -143,7 +144,6 @@ def main():
     parser.add_argument("--no_pushforward", action="store_true")
     parser.add_argument("--no_physics", action="store_true")
     parser.add_argument("--test", action="store_true")
-    parser.add_argument("--checkpoint_dir", type=str, default=None, help="Override checkpoint output folder")
     args = parser.parse_args()
     cfg = CONFIG
     if args.epochs: cfg.n_epochs = args.epochs
@@ -180,9 +180,7 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=1e-4)
     scheduler = build_scheduler(optimizer, cfg)
     criterion = DeepONetLoss(lambda_physics=cfg.lambda_physics)
-    ckpt_dir = args.checkpoint_dir if args.checkpoint_dir else cfg.checkpoint_dir
-    print(f"  Checkpoints will be saved to: {ckpt_dir}")
-    ckpt_mgr = CheckpointManager(ckpt_dir)
+    ckpt_mgr = CheckpointManager(cfg.checkpoint_dir)
 
     if args.test:
         print("=== SANITY TEST ===")

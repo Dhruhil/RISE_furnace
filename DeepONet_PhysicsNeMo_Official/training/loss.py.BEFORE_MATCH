@@ -66,17 +66,10 @@ def pi_deeponet_physics_loss(
     rad_res = (dT_dt - dT_dt_rad) / 1000.0
     L_rad   = ((rad_res * non_heater).pow(2)).mean()
 
-    # Energy balance: predicted rate should match sum of three mechanism rates
-    dT_dt_total = dT_dt_cond + dT_dt_conv + dT_dt_rad
-    eng_res     = (dT_dt - dT_dt_total)
-    L_eng       = ((eng_res * non_heater).pow(2)).mean() / ((T_std ** 2) + 1e-8)
-
-    # Weights match GNN v4 FINAL: 0.4 cond + 0.3 conv + 0.2 rad + 0.1 eng
-    L_phys = 0.4 * L_cond + 0.3 * L_conv + 0.2 * L_rad + 0.1 * L_eng
+    L_phys = 0.5 * L_conv + 0.3 * L_cond + 0.2 * L_rad
     breakdown = {
         "cond": float(L_cond.detach()), "conv": float(L_conv.detach()),
         "rad":  float(L_rad.detach()),  "overshoot": float(L_overshoot.detach()),
-        "eng":  float(L_eng.detach()),
         "physics": float(L_phys.detach()),
     }
     return L_phys, breakdown

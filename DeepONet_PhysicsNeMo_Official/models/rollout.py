@@ -68,9 +68,15 @@ def rollout_deeponet(model, dataset, sim_i, device="cuda",
             sens["kappa"], sens["Cp"], sens["rho"],
         ], axis=0).astype(np.float32)
         branch = torch.from_numpy(branch).unsqueeze(0).to(device)
-        scalars = torch.tensor(
-            [Tset_norm, t_val / cfg.t_total], dtype=torch.float32
-        ).unsqueeze(0).to(device)
+        scalars = torch.tensor([
+            Tset_norm,
+            t_val / cfg.t_total,
+            sim["cx"]     / 0.206,
+            sim["cy"]     / 0.36,
+            sim["cz"]     / 0.39,
+            sim["radius"] / 0.10,
+            sim["height"] / 0.20,
+        ], dtype=torch.float32).unsqueeze(0).to(device)
 
         # Forward (chunked over cells)
         preds = torch.zeros(n_cells, dtype=torch.float32, device=device)

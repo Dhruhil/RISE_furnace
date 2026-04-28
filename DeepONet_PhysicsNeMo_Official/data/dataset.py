@@ -4,6 +4,7 @@ raw SI material properties at query points (needed for physics loss).
 """
 from __future__ import annotations
 import json
+import re
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -19,7 +20,7 @@ REGION_IDS = {
 }
 HEATER_REGIONS = {f"heater_{i}" for i in range(1, 9)} | {"brick_heater"}
 REGION_PROPERTIES = {
-    "steel_cylinder": {"kappa": 60.0, "Cp": 450.0, "rho": 7800.0},
+    "steel_cylinder": {"kappa": 80.0, "Cp": 450.0, "rho": 7800.0},  # was 60.0 (bug fix)
     "inner_box":      {"kappa": 0.026, "Cp": 1005.0, "rho": 1.2},
     "outer_box":      {"kappa": 1.5, "Cp": 900.0, "rho": 1800.0},
     "brick_heater":   {"kappa": 1.5, "Cp": 900.0, "rho": 1800.0},
@@ -94,6 +95,18 @@ class DeepONetDataset(Dataset):
                 w = np.ones(offset, dtype=np.float32)
                 for region, (a, b) in region_slices.items():
                     w[a:b] = REGION_WEIGHTS.get(region, 1.0)
+                # Parse cylinder geometry from case name string
+                _name = str(grp.attrs.get("name", ""))
+                def _parse_mm(_pat, _default):
+                    _m = re.search(_pat, _name)
+                    return float(_m.group(1)) / 1000.0 if _m else _default
+                _cyl = {
+                    "cx":     _parse_mm(r'cx(-?\d+)mm',  0.0),
+                    "cy":     _parse_mm(r'cy(-?\d+)mm',  0.18),
+                    "cz":     _parse_mm(r'cz(-?\d+)mm',  0.195),
+                    "radius": _parse_mm(r'r(\d+)mm',     0.05),
+                    "height": _parse_mm(r'h(\d+)mm',     0.10),
+                }
                 self._simulations.append({
                     "T_set": T_set, "times": times, "n_times": n_t,
                     "total_cells": offset, "coords": coords_all,
@@ -101,6 +114,7 @@ class DeepONetDataset(Dataset):
                     "kappa": kappa_all, "Cp": Cp_all, "rho": rho_all,
                     "T_all": T_all, "weight": w,
                     "region_slices": region_slices,
+                    **_cyl,
                 })
 
         if not self._simulations:
@@ -185,7 +199,15 @@ class DeepONetDataset(Dataset):
 
         Tset_norm = (T_set - self.Tset_mean) / self.Tset_std
         t_norm    = t_val / cfg.t_total
-        branch_scalars = np.array([Tset_norm, t_norm], dtype=np.float32)
+        branch_scalars = np.array([
+            Tset_norm,
+            t_norm,
+            sim["cx"]     / 0.206,
+            sim["cy"]     / 0.36,
+            sim["cz"]     / 0.39,
+            sim["radius"] / 0.10,
+            sim["height"] / 0.20,
+        ], dtype=np.float32)
 
         q_idx = self._sample_query_points(sim)
         q_coords = sim["coords"][q_idx]

@@ -49,7 +49,7 @@ class DeepONetConfig:
 
     # Extra scalars concatenated to the branch output:
     #   T_set_norm, time/t_total          (2 values)
-    branch_scalar_inputs: int = 7  # was 2 (T_set, time); now 7 (+ cx, cy, cz, radius, height)
+    branch_scalar_inputs: int = 2
 
     # ── Trunk net input ──────────────────────────────────────────────
     # Per query point: (x, y, z, region_id/11, is_heater,
@@ -65,11 +65,11 @@ class DeepONetConfig:
 
     # ── Training ─────────────────────────────────────────────────────
     batch_size:      int   = 4
-    n_epochs:        int   = 200
-    learning_rate:   float = 1e-4
+    n_epochs:        int   = 100
+    learning_rate:   float = 1e-3
     lr_decay_factor: float = 0.5
-    lr_patience:     int   = 15
-    weight_decay:    float = 1e-4
+    lr_patience:     int   = 20
+    weight_decay:    float = 0.0
     grad_clip:       float = 1.0
 
     # ── Data splits ──────────────────────────────────────────────────
