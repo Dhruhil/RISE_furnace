@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Validate generated cases before running simulations.
+Step 2: walk the manifest and check each case is ready to run.
 
-Checks:
-  - Case directory exists
-  - .geo file is patched
-  - Allmesh is executable
-  - thermophysicalProperties exists (steel_cylinder AND brick_heater)
-  - cylinder_params.json is valid
+Verifies:
+  - case directory exists
+  - .geo file is patched and present
+  - Allmesh exists
+  - thermophysicalProperties exists for both steel_cylinder and brick_heater
+  - cylinder_params.json is valid and has all required keys
+
+Failures are logged, not raised - the pipeline continues with the cases that did pass.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from configs.defaults import PipelineConfig
 from configs.parameters import GEO_FILENAME
@@ -21,6 +22,11 @@ from src.core.manifest import Manifest
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+REQUIRED_PARAM_KEYS: set[str] = {
+    "T_set", "cx", "cy", "cz", "radius", "height",
+    "kappa", "Cp", "rho", "brick_heater_kappa",
+}
 
 
 def main() -> None:
@@ -37,53 +43,38 @@ def main() -> None:
     n_fail = 0
 
     for entry in manifest.entries:
+        # base case is the source, not a generated case - skip it
         if entry["case"] == "base_case_that_runs_chnage":
             continue
 
         case_dir = cfg.output_dir / entry["case"]
         errors: list[str] = []
 
-        # Check directory exists
         if not case_dir.is_dir():
             errors.append("directory missing")
         else:
-            # Check .geo file
-            geo_path = case_dir / GEO_FILENAME
-            if not geo_path.is_file():
+            if not (case_dir / GEO_FILENAME).is_file():
                 errors.append(".geo missing")
 
-            # Check Allmesh
-            allmesh = case_dir / "Allmesh"
-            if not allmesh.is_file():
+            if not (case_dir / "Allmesh").is_file():
                 errors.append("Allmesh missing")
 
-            # Check steel_cylinder thermo
-            thermo_steel = (
-                case_dir / "constant" / "steel_cylinder" / "thermophysicalProperties"
-            )
+            thermo_steel = case_dir / "constant" / "steel_cylinder" / "thermophysicalProperties"
             if not thermo_steel.is_file():
                 errors.append("steel_cylinder thermophysicalProperties missing")
 
-            # Check brick_heater thermo
-            thermo_brick = (
-                case_dir / "constant" / "brick_heater" / "thermophysicalProperties"
-            )
+            thermo_brick = case_dir / "constant" / "brick_heater" / "thermophysicalProperties"
             if not thermo_brick.is_file():
                 errors.append("brick_heater thermophysicalProperties missing")
 
-            # Check cylinder_params.json
             params_json = case_dir / "cylinder_params.json"
             if params_json.is_file():
                 try:
                     with open(params_json) as f:
-                        p = json.load(f)
-                    required = {
-                        "T_set", "cx", "cy", "cz", "radius", "height",
-                        "kappa", "Cp", "rho", "brick_heater_kappa",
-                    }
-                    missing = required - set(p.keys())
-                    if missing:
-                        errors.append(f"params missing keys: {missing}")
+                        params = json.load(f)
+                    missing_keys = REQUIRED_PARAM_KEYS - set(params.keys())
+                    if missing_keys:
+                        errors.append(f"params missing keys: {missing_keys}")
                 except json.JSONDecodeError:
                     errors.append("cylinder_params.json corrupt")
             else:

@@ -6,9 +6,14 @@ from typing import Any
 
 
 def case_name(params: dict[str, Any], idx: int) -> str:
-    """Generate a human-readable, filesystem-safe case directory name.
+    """Build a deterministic, filesystem-safe directory name for one case.
 
-    Now includes cx (cylinder x-position) since it varies.
+    The name encodes every parameter that varies across the LHS grid, so
+    two cases with the same name necessarily have the same parameters.
+    cx is included because it now varies (was fixed at 0 in v1).
+
+    Example:
+        case042_Tset1273_cx20mm_cy180mm_cz195mm_r50mm_h100mm_k80_Cp450_rho7800
     """
     return (
         f"case{idx:03d}"

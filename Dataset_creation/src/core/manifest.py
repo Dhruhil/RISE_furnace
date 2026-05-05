@@ -1,4 +1,4 @@
-"""Case manifest management — single source of truth for case status."""
+"""Manifest tracking - the single source of truth for case status."""
 
 from __future__ import annotations
 
@@ -10,17 +10,15 @@ import numpy as np
 
 
 class Manifest:
-    """Read/write the case_manifest.json file.
+    """Wrapper around case_manifest.json.
 
-    Each entry stores parameter values and a status flag
-    ("ready", "running", "completed", "failed").
+    Each entry is a dict with parameter values plus a "status" field
+    that progresses through: ready -> running -> completed | failed.
     """
 
     def __init__(self, path: Path):
         self._path = path
         self._entries: list[dict[str, Any]] = []
-
-    # ---- I/O --------------------------------------------------------
 
     def load(self) -> None:
         if self._path.exists():
@@ -29,18 +27,8 @@ class Manifest:
 
     def save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-
-        def _convert(obj: Any) -> Any:
-            if isinstance(obj, (np.integer,)):
-                return int(obj)
-            if isinstance(obj, (np.floating,)):
-                return float(obj)
-            return obj
-
         with open(self._path, "w") as f:
-            json.dump(self._entries, f, indent=2, default=_convert)
-
-    # ---- Accessors ---------------------------------------------------
+            json.dump(self._entries, f, indent=2, default=_json_default)
 
     @property
     def entries(self) -> list[dict[str, Any]]:
@@ -57,3 +45,12 @@ class Manifest:
 
     def __len__(self) -> int:
         return len(self._entries)
+
+
+def _json_default(obj: Any) -> Any:
+    """Coerce numpy scalars so json.dump doesn't choke on manifest entries."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")

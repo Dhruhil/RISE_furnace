@@ -100,8 +100,7 @@ Dataset_creation/
 │   ├── __init__.py
 │   ├── defaults.py                 — PipelineConfig (reads .env)
 │   ├── furnace.py                  — furnace bounds + heater region names
-│   ├── parameters.py               — active parameter file (runtime)
-│   └── parameters_k8.py            — source config: steel κ=80, brick κ=8
+│   └── parameters.py               — active parameter file (runtime)
 │
 ├── scripts/
 │   ├── python/

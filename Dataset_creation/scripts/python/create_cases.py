@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Create OpenFOAM parameter study cases using Latin Hypercube Sampling.
+Step 1: generate OpenFOAM parameter-study cases via Latin Hypercube Sampling.
 
 Usage:
     python -m scripts.create_cases
@@ -24,6 +24,14 @@ from src.utils.scripts import write_run_script
 logger = get_logger(__name__)
 
 
+def _to_jsonable(d: dict) -> dict:
+    """Coerce numpy floats so the manifest stays json-serialisable."""
+    return {
+        k: float(v) if isinstance(v, (int, float, np.floating)) else v
+        for k, v in d.items()
+    }
+
+
 def main() -> None:
     cfg = PipelineConfig()
 
@@ -31,7 +39,6 @@ def main() -> None:
     logger.info("STEP 1: CREATE OPENFOAM PARAMETER STUDY CASES")
     logger.info("=" * 60)
 
-    # Print configuration
     logger.info("Base case: %s", cfg.base_case)
     logger.info("Output:    %s", cfg.output_dir)
     logger.info("Samples:   %d", cfg.n_lhs_samples)
@@ -42,25 +49,21 @@ def main() -> None:
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate valid cases
     cases = generate_unique_random_cases(cfg.n_lhs_samples, cfg.lhs_seed)
-
     if not cases:
         logger.error("No valid cases generated!")
         return
 
-    # Initialise manifest with base case
+    # idx 0 = the original base case, recorded so the manifest is a
+    # complete record of every directory in output_dir
     manifest = Manifest(cfg.manifest_path)
-    base_dict = BASE_PARAMS.to_dict()
     manifest.add({
         "idx": 0,
         "case": "base_case_that_runs_chnage",
         "status": "completed",
-        **{k: float(v) if isinstance(v, (int, float, np.floating)) else v
-           for k, v in base_dict.items()},
+        **_to_jsonable(BASE_PARAMS.to_dict()),
     })
 
-    # Build each case
     logger.info("Creating %d parameter study cases ...", len(cases))
 
     for idx, params in enumerate(cases, start=1):
@@ -69,7 +72,7 @@ def main() -> None:
 
         logger.info(
             "[%03d/%d] %s | T=%.0fK cx=%.3f cy=%.3f cz=%.3f r=%.1fmm h=%.1fmm "
-            "κ_steel=%.0f κ_brick=%.0f Cp=%.0f ρ=%.0f",
+            "k_steel=%.0f k_brick=%.0f Cp=%.0f rho=%.0f",
             idx, len(cases), name,
             params["T_set"], params.get("cx", 0.0), params["cy"], params["cz"],
             params["radius"] * 1e3, params["height"] * 1e3,
@@ -83,30 +86,26 @@ def main() -> None:
             "idx": idx,
             "case": name,
             "status": "ready",
-            **{k: float(v) if isinstance(v, (int, float, np.floating)) else v
-               for k, v in params.items()},
+            **_to_jsonable(params),
         })
 
-    # Save manifest
     manifest.save()
     logger.info("Manifest: %s (%d entries)", cfg.manifest_path, len(manifest))
 
-    # Generate run script
     script_path = write_run_script(
         cfg.output_dir, cases, cfg.container_base_dir,
         max_jobs=cfg.max_parallel_jobs,
     )
     logger.info("Run script: %s", script_path)
 
-    # Summary table
+    # summary table
     logger.info("")
     logger.info("=" * 60)
     logger.info("SUMMARY: %d cases created", len(cases))
     logger.info("=" * 60)
     header = (
         f"{'#':>4} {'T_set':>6} {'cx[mm]':>7} {'cy[mm]':>7} {'cz[mm]':>7} "
-        f"{'r[mm]':>6} {'h[mm]':>6} {'κ_s':>4} {'κ_b':>4} {'Cp':>5} "
-        f"{'ρ':>5}"
+        f"{'r[mm]':>6} {'h[mm]':>6} {'k_s':>4} {'k_b':>4} {'Cp':>5} {'rho':>5}"
     )
     logger.info(header)
     logger.info("-" * 80)

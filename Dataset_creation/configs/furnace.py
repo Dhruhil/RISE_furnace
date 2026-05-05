@@ -2,7 +2,7 @@
 Furnace geometry constants.
 
 From the .geo file analysis:
-  inner_box ~ x:[0, 0.206], y:[0, 0.36], z:[0, 0.39]
+    inner_box ~ x:[0, 0.206], y:[0, 0.36], z:[0, 0.39]
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class FurnaceBounds:
-    """Furnace inner-box dimensions [m]."""
+    """Furnace inner-box dimensions in metres."""
 
     x_min: float = 0.0
     x_max: float = 0.206
@@ -22,8 +22,11 @@ class FurnaceBounds:
     z_max: float = 0.39
 
 
-FURNACE_BOUNDS = FurnaceBounds()
+# frozen singleton - safe to import from anywhere
+FURNACE_BOUNDS: FurnaceBounds = FurnaceBounds()
 
+
+# region names must match the folders under constant/ in the OpenFOAM case
 HEATER_REGIONS: list[str] = [
     "brick_heater",
     "heater_1",

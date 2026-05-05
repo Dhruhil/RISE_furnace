@@ -1,1 +1,0 @@
-"""Geometry manipulation and validation."""
