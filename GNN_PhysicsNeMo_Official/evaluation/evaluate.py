@@ -1,190 +1,245 @@
 """
-Full test-set evaluation with per-simulation rollout metrics.
-
-BUGS FIXED vs old version:
-  1. _plot_step_mae() used cfg.t_end which doesn't exist in new config
-     → AttributeError crash. Fixed to use cfg.train_time_end
-  2. main() used cfg.predict_future_time which was removed from config
-     → AttributeError crash. Fixed to use cfg.predict_time_end
-  3. dataset loaded without split_mode — rollout was capped at 320 steps
-     instead of 400. Fixed to use split_mode="evaluation"
-
-Usage:
-    python evaluation/evaluate.py
-    python evaluation/evaluate.py --checkpoint outputs/checkpoints/best_model.pt
+GNN Rollout Evaluation — per-region MAE for T_next prediction.
+Patched to accept --checkpoint and --output_dir flags.
 """
-
 from __future__ import annotations
-
-import argparse
-import json
-import sys
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import sys, time, json
 from pathlib import Path
-
+import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from configs.base_config import BaseConfig, CONFIG
-from data.dataset import HeatTreatmentDataset, get_evaluation_dataset
+from configs.base_config import CONFIG
+from data.dataset_unified import UnifiedDataset, REGION_IDS, HEATER_REGIONS
+from configs.base_config import REGION_MATERIALS
 from models.meshgraphnet import HeatTreatmentGNN
-from models.rollout import rollout_from_dataset, predict_at_time
-from utils.metrics import compute_metrics, within_tolerance, metrics_per_timestep
+from torch_geometric.data import Data
 
 
-def evaluate_all_test_sims(
-    model:   HeatTreatmentGNN,
-    cfg:     BaseConfig,
-    device:  str,
-) -> dict:
-    """
-    Roll out all test simulations and report Phase 1 and Phase 2 metrics.
+def rollout_gnn(model, dataset, sim_i, device, start_t=20):
+    """Autoregressive rollout on unified graph."""
+    sim = dataset._simulations[sim_i]
+    edge_index, edge_attr = dataset._graphs[sim_i]
+    total = sim["total_nodes"]
+    T_set = sim["T_set"]
+    times = sim["times"]
 
-    Phase 1: t=0–3200s (training window, model saw this)
-    Phase 2: t=3200–4000s (verification window, model NEVER saw this)
-    """
+    n_times = len(times)
+    T_all = np.zeros((n_times, total), dtype=np.float32)
+    for region, rdata in sim["region_data"].items():
+        o = rdata["offset"]
+        n = rdata["n_cells"]
+        for t in range(n_times):
+            T_all[t, o:o+n] = rdata["T_array"][t]
+
+    T_cur = T_all[start_t].copy()
+    n_rollout = n_times - start_t
+    T_pred_all = np.zeros((n_rollout, total), dtype=np.float32)
+    T_pred_all[0] = T_cur
+
+    all_coords = sim["all_coords"]
+    all_rids = sim["all_region_ids"]
+    heater_rids = {REGION_IDS[r] for r in HEATER_REGIONS if r in REGION_IDS}
+    is_heater = np.array([1.0 if int(all_rids[j]) in heater_rids else 0.0
+                          for j in range(total)], dtype=np.float32)
+
+    # Per-region material features (MUST match dataset.__getitem__)
+    _kappa_feat = np.zeros(total, dtype=np.float32)
+    _Cp_feat    = np.zeros(total, dtype=np.float32)
+    _rho_feat   = np.zeros(total, dtype=np.float32)
+    for _rname, _rdata in sim["region_data"].items():
+        _o = _rdata["offset"]
+        _n = _rdata["n_cells"]
+        _mat = REGION_MATERIALS.get(_rname, {"kappa": 80.0, "Cp": 450.0, "rho": 7800.0})
+        _kappa_feat[_o:_o + _n] = _mat["kappa"] / 100.0
+        _Cp_feat   [_o:_o + _n] = _mat["Cp"]    / 1000.0
+        _rho_feat  [_o:_o + _n] = _mat["rho"]   / 10000.0
+
+    T_mean = dataset.T_mean
+    T_std = dataset.T_std
+
     model.eval()
+    with torch.no_grad():
+        for step in range(1, n_rollout):
+            t_idx = start_t + step
+            if t_idx >= n_times:
+                break
+            t_val = times[t_idx - 1]
 
-    # FIX: use evaluation dataset with all 400 steps
-    dataset = get_evaluation_dataset(cfg)
+            T_norm = (T_cur - T_mean) / T_std
+            Tset_norm = (T_set - T_mean) / T_std
+            t_norm = t_val / 4000.0
 
-    n_train = cfg.n_train_steps   # 320
-    n_total = cfg.n_total_steps   # 400
+            node_feats = np.column_stack([
+                all_coords[:, 0], all_coords[:, 1], all_coords[:, 2],
+                T_norm,
+                np.full(total, Tset_norm, dtype=np.float32),
+                all_rids / 11.0,
+                np.full(total, t_norm, dtype=np.float32),
+                is_heater,
+                np.full(total, sim["cx"] / 0.206, dtype=np.float32),
+                np.full(total, sim["cy"] / 0.36, dtype=np.float32),
+                np.full(total, sim["cz"] / 0.39, dtype=np.float32),
+                np.full(total, sim["radius"] / 0.10, dtype=np.float32),
+                np.full(total, sim["height"] / 0.20, dtype=np.float32),
+                _kappa_feat,
+                _Cp_feat,
+                _rho_feat,
+            ]).astype(np.float32)
 
-    all_p1_mae, all_p1_r2 = [], []
-    all_p2_mae, all_p2_r2 = [], []
-    per_step_mae_all = []
-    per_sim_results  = {}
+            batch = Data(
+                x=torch.tensor(node_feats, dtype=torch.float32),
+                edge_index=edge_index,
+                edge_attr=edge_attr,
+            ).to(device)
 
-    print(f"\n{'='*70}")
-    print(f"  TEST EVALUATION — Option A rollout (0 → 4000s)")
-    print(f"{'='*70}")
-    print(f"  {'Sim':>4}  {'P1 MAE':>10}  {'P1 R²':>8}  "
-          f"{'P2 MAE':>10}  {'P2 R²':>8}  {'P2=unseen'}")
-    print(f"  {'-'*60}")
+            pred = model(batch)
+            T_next = pred.squeeze(-1).cpu().numpy() * T_std + T_mean
 
-    save_dir = Path(cfg.output_dir) / "evaluation"
-    save_dir.mkdir(parents=True, exist_ok=True)
+            heater_mask = is_heater > 0.5
+            if t_idx < n_times:
+                T_next[heater_mask] = T_all[t_idx][heater_mask]
 
-    for sim_i in dataset.sim_indices:
-        T_pred, T_true = rollout_from_dataset(
-            model, dataset, sim_i,
-            start_t=0, n_steps=n_total, device=device,
-        )
+            T_pred_all[step] = T_next
+            T_cur = T_next.copy()
 
-        # Phase 1: training window
-        m1 = compute_metrics(T_pred[:n_train+1].ravel(), T_true[:n_train+1].ravel())
-        m1["within_5K"]  = within_tolerance(T_pred[:n_train+1].ravel(),
-                                             T_true[:n_train+1].ravel(), 5.0)
-        m1["within_10K"] = within_tolerance(T_pred[:n_train+1].ravel(),
-                                             T_true[:n_train+1].ravel(), 10.0)
-
-        # Phase 2: verification window (NEVER seen during training)
-        m2 = compute_metrics(T_pred[n_train:].ravel(), T_true[n_train:].ravel())
-        m2["within_5K"]  = within_tolerance(T_pred[n_train:].ravel(),
-                                             T_true[n_train:].ravel(), 5.0)
-        m2["within_10K"] = within_tolerance(T_pred[n_train:].ravel(),
-                                             T_true[n_train:].ravel(), 10.0)
-
-        all_p1_mae.append(m1["mae"]); all_p1_r2.append(m1["r2"])
-        all_p2_mae.append(m2["mae"]); all_p2_r2.append(m2["r2"])
-
-        step_m   = metrics_per_timestep(T_pred[:len(T_true)], T_true)
-        step_mae = np.array([s["mae"] for s in step_m])
-        per_step_mae_all.append(step_mae)
-
-        print(
-            f"  {sim_i:>4}  {m1['mae']:>10.2f}  {m1['r2']:>8.4f}  "
-            f"{m2['mae']:>10.2f}  {m2['r2']:>8.4f}"
-        )
-
-        per_sim_results[f"sim_{sim_i:03d}"] = {
-            "phase1_training":     m1,
-            "phase2_verification": m2,
-            "step_mae":            step_mae.tolist(),
-        }
-
-        np.save(str(save_dir / f"T_pred_sim{sim_i:03d}.npy"), T_pred)
-        np.save(str(save_dir / f"T_true_sim{sim_i:03d}.npy"), T_true)
-
-    print(f"\n  {'':>4}  {'MEAN':>10}  {'MEAN':>8}  {'MEAN':>10}  {'MEAN':>8}")
-    print(
-        f"  {'ALL':>4}  {np.mean(all_p1_mae):>10.2f}  {np.mean(all_p1_r2):>8.4f}  "
-        f"{np.mean(all_p2_mae):>10.2f}  {np.mean(all_p2_r2):>8.4f}"
-    )
-
-    # FIX: use cfg.train_time_end instead of cfg.t_end
-    _plot_step_mae(per_step_mae_all, cfg, str(save_dir))
-
-    summary = {
-        "phase1_training_window": {
-            "t_range":  f"0–{cfg.train_time_end:.0f}s",
-            "mean_mae": float(np.mean(all_p1_mae)),
-            "mean_r2":  float(np.mean(all_p1_r2)),
-            "model_seen_this": True,
-        },
-        "phase2_verification_window": {
-            "t_range":  f"{cfg.train_time_end:.0f}–{cfg.predict_time_end:.0f}s",
-            "mean_mae": float(np.mean(all_p2_mae)),
-            "mean_r2":  float(np.mean(all_p2_r2)),
-            "model_seen_this": False,
-            "ground_truth_available": True,
-        },
-        "per_simulation": per_sim_results,
-    }
-
-    with open(str(save_dir / "evaluation_summary.json"), "w") as f:
-        json.dump(summary, f, indent=2)
-
-    print(f"\n  Results saved → {save_dir}")
-    return summary
-
-
-def _plot_step_mae(per_step_mae_list: list, cfg: BaseConfig, save_dir: str):
-    fig, ax = plt.subplots(figsize=(12, 5))
-    cmap = plt.colormaps["tab10"]
-    for i, step_mae in enumerate(per_step_mae_list):
-        times = np.arange(len(step_mae)) * cfg.dt
-        ax.plot(times, step_mae, color=cmap(i), lw=1.5, label=f"Sim {i}")
-    # FIX: use cfg.train_time_end — cfg.t_end doesn't exist
-    ax.axvline(cfg.train_time_end, color="black", ls="--", lw=2,
-               label=f"Training end ({cfg.train_time_end:.0f}s)")
-    ax.axvspan(cfg.train_time_end, cfg.predict_time_end,
-               alpha=0.08, color="red", label="Verification window (unseen)")
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("MAE [K]")
-    ax.set_title("Per-step MAE — all test simulations")
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(f"{save_dir}/per_step_mae.png", dpi=150)
-    plt.close(fig)
+    return T_pred_all, T_all[start_t:start_t + n_rollout]
 
 
 def main():
+    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=None)
-    parser.add_argument("--device",     default=None)
+    parser.add_argument("--device",     default="cuda")
+    parser.add_argument("--n_sims",     type=int, default=None)
+    parser.add_argument("--checkpoint", type=str, required=True,
+                        help="Path to checkpoint .pt file (e.g., outputs/.../checkpoints/best_model.pt)")
+    parser.add_argument("--output_dir", type=str, required=True,
+                        help="Directory to save evaluation JSON")
+    parser.add_argument("--start_t", type=int, default=20,
+                        help="Starting timestep for rollout (default 20)")
+    parser.add_argument("--n_train_steps", type=int, default=276,
+                        help="Number of in-horizon timesteps (Phase 1 boundary)")
     args = parser.parse_args()
 
-    cfg    = CONFIG
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    # FIX: use cfg.checkpoint_dir, not cfg.predict_future_time
-    ckpt   = args.checkpoint or f"{cfg.checkpoint_dir}/best_model.pt"
+    cfg = CONFIG
+    cfg.node_in_features = 16
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    model   = HeatTreatmentGNN.load(ckpt, cfg, device)
-    summary = evaluate_all_test_sims(model, cfg, device)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    p1 = summary["phase1_training_window"]
-    p2 = summary["phase2_verification_window"]
-    print(f"\n  Phase 1 ({p1['t_range']}, training window):")
-    print(f"    MAE = {p1['mean_mae']:.2f} K  R² = {p1['mean_r2']:.4f}")
-    print(f"\n  Phase 2 ({p2['t_range']}, UNSEEN verification):")
-    print(f"    MAE = {p2['mean_mae']:.2f} K  R² = {p2['mean_r2']:.4f}")
+    print(f"\n{'='*80}")
+    print(f"  GNN ROLLOUT EVALUATION — Per-Region Accuracy")
+    print(f"  Phase 1: 0-2760s | Phase 2: 2760-3460s")
+    print(f"  Checkpoint: {args.checkpoint}")
+    print(f"  Output dir: {output_dir}")
+    print(f"{'='*80}\n")
+
+    test_ds = UnifiedDataset(cfg.all_regions_dataset_path, cfg, "test", "evaluation")
+
+    print(f"  Loading model from {args.checkpoint}")
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    model = HeatTreatmentGNN(cfg).to(device)
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+    print(f"  Model loaded (epoch {ckpt.get('epoch', '?')})\n")
+
+    all_results = {}
+    region_names = {v: k for k, v in REGION_IDS.items()}
+
+    n_eval = len(test_ds.sim_indices) if args.n_sims is None else min(args.n_sims, len(test_ds.sim_indices))
+
+    for i, sim_i in enumerate(test_ds.sim_indices[:n_eval]):
+        sim = test_ds._simulations[sim_i]
+        all_rids = sim["all_region_ids"]
+        print(f"  Sim {sim_i} (T_set={sim['T_set']:.0f}K)")
+        print(f"  {'Region':>18} | {'Cells':>6} | {'P1 MAE':>8} | {'P2 MAE':>8}")
+        print(f"  {'-'*50}")
+
+        t0 = time.time()
+        T_pred, T_true = rollout_gnn(model, test_ds, sim_i, device, args.start_t)
+        rt = time.time() - t0
+
+        p1_end = min(args.n_train_steps - args.start_t, T_pred.shape[0])
+        metrics = {}
+
+        for rid in range(12):
+            rname = region_names.get(rid, f"r{rid}")
+            mask = (all_rids == rid)
+            if mask.sum() == 0:
+                continue
+            is_h = rname in HEATER_REGIONS
+            p1 = float(np.mean(np.abs(T_pred[1:p1_end, mask] - T_true[1:p1_end, mask]))) if p1_end > 1 else 0
+            p2_data = T_pred[p1_end:, mask] - T_true[p1_end:, mask]
+            p2 = float(np.mean(np.abs(p2_data))) if p2_data.size > 0 else float('nan')
+            metrics[rname] = {"n_cells": int(mask.sum()), "p1_mae": p1, "p2_mae": p2, "is_heater": is_h}
+
+            p2s = f"{p2:.2f}K" if not np.isnan(p2) else "N/A"
+            tag = " (BC)" if is_h else ""
+            print(f"  {rname:>18} | {mask.sum():>6} | {p1:>7.2f}K | {p2s:>8}{tag}")
+
+        nh = {k: v for k, v in metrics.items() if not v['is_heater']}
+        if nh:
+            p1a = np.mean([v['p1_mae'] for v in nh.values()])
+            p2v = [v['p2_mae'] for v in nh.values() if not np.isnan(v['p2_mae'])]
+            p2a = np.mean(p2v) if p2v else float('nan')
+            print(f"  {'NON-HEATER AVG':>18} |        | {p1a:>7.2f}K | {p2a:.2f}K")
+        print(f"  Rollout: {rt:.1f}s ({T_pred.shape[0]} steps)\n")
+
+        all_results[f"sim_{sim_i}"] = {
+            "T_set": float(sim['T_set']),
+            "n_steps": int(T_pred.shape[0]),
+            "rollout_time_s": float(rt),
+            "regions": metrics,
+        }
+
+    # Summary
+    print(f"{'='*80}")
+    print(f"  SUMMARY — GNN ROLLOUT")
+    print(f"{'='*80}")
+    summary = {}
+    for rname in ["steel_cylinder", "inner_box", "outer_box"]:
+        p1v, p2v = [], []
+        for sk, sim_data in all_results.items():
+            if rname in sim_data["regions"]:
+                p1v.append(sim_data["regions"][rname]["p1_mae"])
+                if not np.isnan(sim_data["regions"][rname]["p2_mae"]):
+                    p2v.append(sim_data["regions"][rname]["p2_mae"])
+        if p1v:
+            p2_mean = float(np.mean(p2v)) if p2v else float('nan')
+            p1_mean = float(np.mean(p1v))
+            p1_std  = float(np.std(p1v))
+            p2_std  = float(np.std(p2v)) if p2v else float('nan')
+            summary[rname] = {
+                "p1_mae_mean": p1_mean,
+                "p1_mae_std":  p1_std,
+                "p2_mae_mean": p2_mean,
+                "p2_mae_std":  p2_std,
+                "n_sims": len(p1v),
+            }
+            p2s = f"{p2_mean:.2f}±{p2_std:.2f}K" if p2v else "N/A"
+            print(f"  {rname:>18}: P1={p1_mean:.2f}±{p1_std:.2f}K  P2={p2s}")
+
+    # Build full JSON output
+    output_data = {
+        "checkpoint": str(args.checkpoint),
+        "checkpoint_epoch": ckpt.get('epoch', None),
+        "phase1_start_s": 0,
+        "phase1_end_s": 2760,
+        "phase2_start_s": 2760,
+        "phase2_end_s": 3460,
+        "start_t": args.start_t,
+        "n_train_steps": args.n_train_steps,
+        "n_test_sims": n_eval,
+        "summary": summary,
+        "per_sim": all_results,
+    }
+
+    out_path = output_dir / "gnn_rollout_results.json"
+    with open(out_path, "w") as f:
+        json.dump(output_data, f, indent=2, default=str)
+    print(f"\n  Saved: {out_path}")
 
 
 if __name__ == "__main__":

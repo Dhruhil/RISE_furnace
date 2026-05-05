@@ -1,74 +1,100 @@
 """
-Base configuration — Option A temporal split.
+Base configuration — Unified GNN.
 Configured for Alvis HPC cluster (C3SE).
 """
-
 from __future__ import annotations
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Alvis path
-_BASE = "/mimer/NOBACKUP/groups/revar"
+_BASE = os.environ.get("GNN_BASE_DIR", "/mimer/NOBACKUP/groups/revar")
 
+
+
+# ── Per-region material properties (from OpenFOAM thermophysicalProperties) ──
+# Each region has its own (kappa [W/m.K], Cp [J/kg.K], rho [kg/m^3]).
+# inner_box is a fluid (air); k ~ 0.05 used as low-conduction placeholder.
+REGION_MATERIALS = {
+    "steel_cylinder": {"kappa": 80.0,  "Cp": 450.0,  "rho": 7800.0},
+    "inner_box":      {"kappa": 0.05,  "Cp": 1000.0, "rho": 1.2},     # air (fluid)
+    "outer_box":      {"kappa": 15.0,  "Cp": 1000.0, "rho": 867.0},
+    "brick_heater":   {"kappa": 8.0,   "Cp": 450.0,  "rho": 7800.0},
+    "heater_1":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
+    "heater_2":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
+    "heater_3":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
+    "heater_4":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
+    "heater_5":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
+    "heater_6":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
+    "heater_7":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
+    "heater_8":       {"kappa": 80.0,  "Cp": 450.0,  "rho": 8000.0},
+}
+
+# ========================================================================
+# PHYSICAL CONSTANTS for physics-informed loss
+# ========================================================================
+SIGMA_SB = 5.67e-8            # Stefan-Boltzmann constant, W/(m^2*K^4)
+EMISSIVITY_STEEL = 0.80       # emissivity of oxidized steel (0-1)
+H_CONV = 25.0                 # natural convection coefficient, W/(m^2*K)
+CHAR_THICKNESS = 0.0167         # V/A ratio for cylinder r=50mm, h=100mm (Incropera 2011)
 
 @dataclass
 class BaseConfig:
-
-    # ── Paths (Alvis) ─────────────────────────────────────────────────────────
     dataset_path:   str = f"{_BASE}/dataset_cylinder_features.h5"
+    all_regions_dataset_path: str = f"{_BASE}/GNN_PhysicsNeMo_Official/dataset_v2_all_regions_clean.h5"
     output_dir:     str = f"{_BASE}/GNN_PhysicsNeMo_Official/outputs"
     checkpoint_dir: str = f"{_BASE}/GNN_PhysicsNeMo_Official/outputs/checkpoints"
     log_dir:        str = f"{_BASE}/GNN_PhysicsNeMo_Official/outputs/logs"
 
     feature_cols: list = field(default_factory=lambda: [
-        "x", "y", "z", "t",
-        "T_set", "cx", "cy", "cz",
-        "radius", "height", "volume", "mass",
-        "kappa", "Cp", "rho",
+        "x", "y", "z", "t", "T_set", "cx", "cy", "cz",
+        "radius", "height", "volume", "mass", "kappa", "Cp", "rho",
     ])
+    all_regions: list = field(default_factory=lambda: [
+        "steel_cylinder", "inner_box", "outer_box",
+        "heater_1", "heater_2", "heater_3", "heater_4",
+        "heater_5", "heater_6", "heater_7", "heater_8",
+        "brick_heater",
+    ])
+    n_regions: int = 12
     target_col: str = "T"
     n_features:  int = 15
-
-    val_fraction:  float = 0.14
+    val_fraction:  float = 0.13
     test_fraction: float = 0.10
-
-    graph_k_neighbors: int  = 16
+    graph_k_neighbors: int = 12
     use_radius_graph:  bool = False
-
-    node_in_features:         int = 11
-    edge_in_features:         int = 4
+    node_in_features:         int = 16
+    node_in_features_allregions: int = 7
+    edge_in_features:         int = 5
     hidden_features:          int = 128
-    n_message_passing_layers: int = 15
+    n_message_passing_layers: int = 4
     output_features:          int = 1
-
     batch_size:      int   = 4
     n_epochs:        int   = 200
     learning_rate:   float = 1e-3
     lr_decay_factor: float = 0.5
     lr_patience:     int   = 20
-    weight_decay:    float = 1e-5
+    weight_decay:  float = 1e-5
     grad_clip:       float = 1.0
-
     dt:               float = 10.0
-    t_total:          float = 4000.0
-    train_time_end:   float = 3200.0
-    predict_time_end: float = 4000.0
-
+    t_total:          float = 3460.0
+    train_time_end:   float = 2760.0
+    predict_time_end: float = 3460.0
     sigma_sb:       float = 5.67e-8
     epsilon_steel:  float = 0.80
+    # NOTE: the loss weights below are currently unused.
+    # Actual weights are hardcoded in physics_loss_unified(): 0.5/0.3/0.15/0.05.
+    # Kept here for potential future use.
     w_conduction:   float = 0.3
     w_convection:   float = 0.5
     w_radiation:    float = 0.3
     char_thickness: float = 0.01
-
     log_every_n_epochs:  int  = 1
     save_every_n_epochs: int  = 10
     use_wandb:           bool = False
     wandb_project:       str  = "heat-treatment-gnn"
-    wandb_run_name:      str  = "meshgraphnet_optionA_alvis_A100"
-
+    wandb_run_name:      str  = "unified_gnn_alvis"
     device:      str = "cuda"
-    num_workers: int = 0       # A100 on Alvis — use 4 workers
+    num_workers: int = 0
 
     @property
     def n_train_steps(self) -> int:
@@ -84,13 +110,15 @@ class BaseConfig:
 
     def __post_init__(self):
         for p in [
-            self.checkpoint_dir,
-            self.log_dir,
+            self.checkpoint_dir, self.log_dir,
             self.output_dir + "/predictions",
             self.output_dir + "/plots",
             self.output_dir + "/verification",
         ]:
-            Path(p).mkdir(parents=True, exist_ok=True)
+            try:
+                Path(p).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
 
 
 CONFIG = BaseConfig()
