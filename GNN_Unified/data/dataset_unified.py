@@ -6,6 +6,7 @@ that are physically close (within threshold distance).
 """
 from __future__ import annotations
 import json
+import re
 import numpy as np
 import torch
 from torch_geometric.data import Data
@@ -88,12 +89,22 @@ class UnifiedDataset(torch.utils.data.Dataset):
                     node_offsets[region] = offset
                     offset += n_nodes
 
+                # Parse geometric metadata from case name string.
+                # HDF5 attrs only contain 'name', 'T_set', 'original_case_num',
+                # 'original_index'; geometry is encoded in 'name' as
+                # cx<num>mm cy<num>mm cz<num>mm r<num>mm h<num>mm.
+                _name = str(grp.attrs.get("name", ""))
+                def _parse_mm(pattern, _n, default):
+                    _m = re.search(pattern, _n)
+                    return float(_m.group(1)) / 1000.0 if _m else default
+
                 cyl_params = {
-                    "cx":     float(grp.attrs.get("cx", 0.0)),
-                    "cy":     float(grp.attrs.get("cy", 0.18)),
-                    "cz":     float(grp.attrs.get("cz", 0.195)),
-                    "radius": float(grp.attrs.get("radius", 0.05)),
-                    "height": float(grp.attrs.get("height", 0.10)),
+                    "name":   _name,
+                    "cx":     _parse_mm(r'cx(-?\d+)mm',  _name, 0.0),
+                    "cy":     _parse_mm(r'cy(-?\d+)mm',  _name, 0.18),
+                    "cz":     _parse_mm(r'cz(-?\d+)mm',  _name, 0.195),
+                    "radius": _parse_mm(r'r(\d+)mm',     _name, 0.05),
+                    "height": _parse_mm(r'h(\d+)mm',     _name, 0.10),
                     "kappa":  float(grp.attrs.get("kappa", 60.0)),
                     "Cp":     float(grp.attrs.get("Cp", 450.0)),
                     "rho":    float(grp.attrs.get("rho", 7800.0)),

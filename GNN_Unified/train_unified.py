@@ -287,6 +287,8 @@ def main():
     parser.add_argument("--device", default=None)
     parser.add_argument("--test", action="store_true", help="Run 1-batch sanity test")
     parser.add_argument("--lam", type=float, default=None, help="Override physics lambda")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--checkpoint_dir", type=str, default=None, help="Override checkpoint output folder")
     args = parser.parse_args()
 
     cfg = CONFIG
@@ -363,8 +365,23 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)  # v4 upgrade
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=15, factor=0.5, min_lr=1e-6)
-    ckpt_mgr = CheckpointManager(
-        str(Path(cfg.checkpoint_dir).parent / "checkpoints_unified"))
+    ckpt_dir = args.checkpoint_dir if args.checkpoint_dir else str(Path(cfg.checkpoint_dir).parent / "checkpoints_unified")
+    print(f"  Checkpoints will be saved to: {ckpt_dir}")
+    ckpt_mgr = CheckpointManager(ckpt_dir)
+
+    # Resume from checkpoint if specified
+    start_epoch = 1
+    if args.resume:
+        print(f"\n  Resuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+        if "scheduler_state" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state"])
+        start_epoch = ckpt["epoch"] + 1
+        prev_mae = ckpt.get("metrics", {}).get("steel_mae", "N/A")
+        print(f"  Resumed at epoch {start_epoch}")
+        print(f"  Previous best Steel MAE: {prev_mae}")
 
     print(f"  {'Ep':>4} | {'TrLoss':>9} | {'TrData':>9} | "
           f"{'TrPhys':>9} | {'VaData':>9} | "
@@ -377,7 +394,7 @@ def main():
     t0 = time.time()
     n_ep = args.epochs
 
-    for epoch in range(1, n_ep + 1):
+    for epoch in range(start_epoch, n_ep + 1):
         lam = get_physics_lambda(epoch, n_ep) if args.lam is None else args.lam
         ep_start = time.time()
         w2 = get_pushforward_weight(epoch, n_ep)

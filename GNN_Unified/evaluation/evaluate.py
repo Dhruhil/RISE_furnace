@@ -1,5 +1,6 @@
 """
 GNN Rollout Evaluation — per-region MAE for T_next prediction.
+Patched to accept --checkpoint and --output_dir flags.
 """
 from __future__ import annotations
 import sys, time, json
@@ -82,9 +83,9 @@ def rollout_gnn(model, dataset, sim_i, device, start_t=20):
                 np.full(total, sim["cz"] / 0.39, dtype=np.float32),
                 np.full(total, sim["radius"] / 0.10, dtype=np.float32),
                 np.full(total, sim["height"] / 0.20, dtype=np.float32),
-                _kappa_feat,    # [13] per-region, /100
-                _Cp_feat,       # [14] per-region, /1000
-                _rho_feat,      # [15] per-region, /10000
+                _kappa_feat,
+                _Cp_feat,
+                _rho_feat,
             ]).astype(np.float32)
 
             batch = Data(
@@ -109,31 +110,41 @@ def rollout_gnn(model, dataset, sim_i, device, start_t=20):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--n_sims", type=int, default=None)
+    parser.add_argument("--device",     default="cuda")
+    parser.add_argument("--n_sims",     type=int, default=None)
+    parser.add_argument("--checkpoint", type=str, required=True,
+                        help="Path to checkpoint .pt file (e.g., outputs/.../checkpoints/best_model.pt)")
+    parser.add_argument("--output_dir", type=str, required=True,
+                        help="Directory to save evaluation JSON")
+    parser.add_argument("--start_t", type=int, default=20,
+                        help="Starting timestep for rollout (default 20)")
+    parser.add_argument("--n_train_steps", type=int, default=276,
+                        help="Number of in-horizon timesteps (Phase 1 boundary)")
     args = parser.parse_args()
 
     cfg = CONFIG
     cfg.node_in_features = 16
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"\n{'='*80}")
     print(f"  GNN ROLLOUT EVALUATION — Per-Region Accuracy")
     print(f"  Phase 1: 0-2760s | Phase 2: 2760-3460s")
+    print(f"  Checkpoint: {args.checkpoint}")
+    print(f"  Output dir: {output_dir}")
     print(f"{'='*80}\n")
 
     test_ds = UnifiedDataset(cfg.all_regions_dataset_path, cfg, "test", "evaluation")
 
-    ckpt_path = "outputs/checkpoints_unified/best_model_ep97_snapshot.pt"
-    print(f"  Loading model from {ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    print(f"  Loading model from {args.checkpoint}")
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     model = HeatTreatmentGNN(cfg).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     print(f"  Model loaded (epoch {ckpt.get('epoch', '?')})\n")
 
-    start_t = 20
-    n_train_steps = 276
     all_results = {}
     region_names = {v: k for k, v in REGION_IDS.items()}
 
@@ -147,10 +158,10 @@ def main():
         print(f"  {'-'*50}")
 
         t0 = time.time()
-        T_pred, T_true = rollout_gnn(model, test_ds, sim_i, device, start_t)
+        T_pred, T_true = rollout_gnn(model, test_ds, sim_i, device, args.start_t)
         rt = time.time() - t0
 
-        p1_end = min(n_train_steps - start_t, T_pred.shape[0])
+        p1_end = min(args.n_train_steps - args.start_t, T_pred.shape[0])
         metrics = {}
 
         for rid in range(12):
@@ -175,26 +186,59 @@ def main():
             p2a = np.mean(p2v) if p2v else float('nan')
             print(f"  {'NON-HEATER AVG':>18} |        | {p1a:>7.2f}K | {p2a:.2f}K")
         print(f"  Rollout: {rt:.1f}s ({T_pred.shape[0]} steps)\n")
-        all_results[f"sim_{sim_i}"] = metrics
 
+        all_results[f"sim_{sim_i}"] = {
+            "T_set": float(sim['T_set']),
+            "n_steps": int(T_pred.shape[0]),
+            "rollout_time_s": float(rt),
+            "regions": metrics,
+        }
+
+    # Summary
     print(f"{'='*80}")
     print(f"  SUMMARY — GNN ROLLOUT")
     print(f"{'='*80}")
+    summary = {}
     for rname in ["steel_cylinder", "inner_box", "outer_box"]:
         p1v, p2v = [], []
-        for sk, m in all_results.items():
-            if rname in m:
-                p1v.append(m[rname]["p1_mae"])
-                if not np.isnan(m[rname]["p2_mae"]):
-                    p2v.append(m[rname]["p2_mae"])
+        for sk, sim_data in all_results.items():
+            if rname in sim_data["regions"]:
+                p1v.append(sim_data["regions"][rname]["p1_mae"])
+                if not np.isnan(sim_data["regions"][rname]["p2_mae"]):
+                    p2v.append(sim_data["regions"][rname]["p2_mae"])
         if p1v:
-            p2s = f"{np.mean(p2v):.2f}K" if p2v else "N/A"
-            print(f"  {rname:>18}: P1={np.mean(p1v):.2f}K  P2={p2s}")
+            p2_mean = float(np.mean(p2v)) if p2v else float('nan')
+            p1_mean = float(np.mean(p1v))
+            p1_std  = float(np.std(p1v))
+            p2_std  = float(np.std(p2v)) if p2v else float('nan')
+            summary[rname] = {
+                "p1_mae_mean": p1_mean,
+                "p1_mae_std":  p1_std,
+                "p2_mae_mean": p2_mean,
+                "p2_mae_std":  p2_std,
+                "n_sims": len(p1v),
+            }
+            p2s = f"{p2_mean:.2f}±{p2_std:.2f}K" if p2v else "N/A"
+            print(f"  {rname:>18}: P1={p1_mean:.2f}±{p1_std:.2f}K  P2={p2s}")
 
-    out_path = "outputs/evaluation/gnn_rollout_results_ep97.json"
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    # Build full JSON output
+    output_data = {
+        "checkpoint": str(args.checkpoint),
+        "checkpoint_epoch": ckpt.get('epoch', None),
+        "phase1_start_s": 0,
+        "phase1_end_s": 2760,
+        "phase2_start_s": 2760,
+        "phase2_end_s": 3460,
+        "start_t": args.start_t,
+        "n_train_steps": args.n_train_steps,
+        "n_test_sims": n_eval,
+        "summary": summary,
+        "per_sim": all_results,
+    }
+
+    out_path = output_dir / "gnn_rollout_results.json"
     with open(out_path, "w") as f:
-        json.dump(all_results, f, indent=2, default=str)
+        json.dump(output_data, f, indent=2, default=str)
     print(f"\n  Saved: {out_path}")
 
 
