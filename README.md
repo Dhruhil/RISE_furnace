@@ -1,241 +1,196 @@
-# Simulating Heat Treatment of Cast Metal Products using OpenFOAM
-### Master Thesis — RISE Research Institutes of Sweden
+# Simulating Heat Treatment of Cast Metal Products using OpenFOAM and AI
 
-Automated pipeline for generating parametric OpenFOAM simulation cases and
-building a normalised HDF5 dataset for machine learning.
+**Master's Thesis** — *RISE Research Institutes of Sweden / Jönköping University*
+
+This repository contains the complete digital-twin pipeline for the heat
+treatment of cast metal components: a validated OpenFOAM ground-truth
+solver, a Latin-Hypercube simulation campaign producing **78 converged
+cases**, and three physics-informed AI surrogate architectures
+(**GNN**, **FNO**, **DeepONet**) implemented on top of NVIDIA PhysicsNeMo.
 
 ---
 
-## Project Structure
+## Repository Structure
 
 ```
-Simulating_Heat_Treatment_of_Cast_Metal_Products_using_OpenFOAM/
-└── Dataset_creation/
-    ├── configs/
-    │   ├── defaults.py        # PipelineConfig — reads from .env
-    │   ├── furnace.py         # Furnace geometry constants
-    │   └── parameters.py      # LHS parameter ranges + feature columns
-    ├── scripts/
-    │   ├── create_cases.py    # Step 1: generate OpenFOAM cases
-    │   ├── validate_cases.py  # Step 2: validate before running
-    │   └── create_dataset.py  # Step 3: build ML dataset from results
-    ├── src/
-    │   ├── core/              # Case builder, dataset builder, manifest
-    │   ├── geometry/          # .geo patcher, geometry validator
-    │   ├── openfoam/          # Allmesh writer, heater patcher, thermo writer
-    │   ├── sampling/          # Latin Hypercube Sampling
-    │   ├── dataset/           # Feature matrix, normaliser, HDF5 writer
-    │   └── vtk_io/            # VTK reader, HDF5 cache
-    ├── tests/                 # Unit tests
-    ├── .env.example           # Template — copy to .env and edit
-    ├── Makefile
-    └── pyproject.toml
+.
+├── Dataset_creation/                  # OpenFOAM data-generation pipeline
+│   └── ...                            # Geometry, meshing, CHT solve, HDF5 export
+│
+├── GNN_PhysicsNeMo_Official/          # MeshGraphNet surrogate (PhysicsNeMo)
+│   ├── README.md
+│   └── ...
+│
+├── FNO_PhysicsNeMo_Official/          # 3D Fourier Neural Operator surrogate
+│   ├── README.md
+│   └── ...
+│
+└── DeepONet_PhysicsNeMo_Official/     # Deep Operator Network surrogate
+    ├── README.md
+    └── ...
 ```
 
-> **Note:** The OpenFOAM base case and simulation output folders are stored
-> on the server only — too large for GitHub.
-> Server path: `/home/openfoam/rise_furnace/base_case_that_runs_chnage`
+Each surrogate sub-folder contains its own `README.md` with full details
+on the architecture, training command, and reproduction steps.
 
 ---
 
 ## Pipeline Overview
 
 ```
-1. Generate cases   →   make create-cases
-                        Creates parametric OpenFOAM case folders using
-                        Latin Hypercube Sampling over cylinder geometry
-                        and material properties.
-
-2. Run simulations  →   bash run_all_openfoam.sh
-                        Runs all cases in parallel inside the OpenFOAM
-                        Docker container.
-
-3. Build dataset    →   make create-dataset
-                        Reads VTK output, extracts temperature fields,
-                        builds a normalised HDF5 dataset for ML training.
-```
-
-Output: `dataset_cylinder_features.h5` — normalised feature matrix ready for ML.
-
----
-
-## Quick Start
-
-### Requirements
-
-- Docker
-- OpenFOAM container (`openfoam-python` — build instructions below)
-- NVIDIA PhysicsNeMo container for dataset step (`physicsnemo:25.06`)
-
-### Build the OpenFOAM + Python image (once only)
-
-```bash
-cat > ~/Dockerfile.openfoam << 'EOF'
-FROM microfluidica/openfoam:2412
-USER root
-RUN apt-get update && \
-    apt-get install -y python3 python3-pip python3-full python3-venv git && \
-    ln -s /usr/bin/python3 /usr/bin/python && \
-    rm -rf /var/lib/apt/lists/*
-USER openfoam
-WORKDIR /home/openfoam/rise_furnace
-EOF
-
-docker build -f ~/Dockerfile.openfoam -t openfoam-python .
-```
-
-### Start the OpenFOAM container
-
-```bash
-docker run -it --user root \
-  -v /home/openfoam/rise_furnace:/home/openfoam/rise_furnace \
-  openfoam-python bash
-```
-
-### Setup inside container (once only)
-
-```bash
-cd /home/openfoam/rise_furnace/Simulating_Heat_Treatment_of_Cast_Metal_Products_using_OpenFOAM/Dataset_creation
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-### Every time you restart the container
-
-```bash
-cd /home/openfoam/rise_furnace/Simulating_Heat_Treatment_of_Cast_Metal_Products_using_OpenFOAM/Dataset_creation
-source .venv/bin/activate
+        ┌──────────────────────────────┐
+        │   1. Dataset_creation/       │
+        │   OpenFOAM CHT solver        │
+        │   chtMultiRegionFoam         │
+        │   89 LHS samples → 78 cases  │
+        └──────────────┬───────────────┘
+                       │  HDF5 dataset
+                       ▼
+   ┌────────────────────────────────────────────┐
+   │  2. AI surrogate training (PhysicsNeMo)    │
+   ├────────────────────────────────────────────┤
+   │   GNN_PhysicsNeMo_Official  (MeshGraphNet) │
+   │   FNO_PhysicsNeMo_Official  (3D FNO)       │
+   │   DeepONet_PhysicsNeMo_Official            │
+   └────────────────┬───────────────────────────┘
+                    │  trained checkpoints
+                    ▼
+        ┌──────────────────────────────┐
+        │   3. Autoregressive rollout  │
+        │   evaluation/evaluate.py     │
+        │   per-region MAE / R²        │
+        └──────────────────────────────┘
 ```
 
 ---
 
-## Configuration
+## 1. Dataset_creation/
 
-```bash
-cp .env.example .env
-nano .env
-```
+Generates the ground-truth dataset by running an automated OpenFOAM
+pipeline over a Latin-Hypercube sample of the design space
+($T_{\text{set}}, c_x, c_y$).
 
-| Variable | Description | Example |
-|---|---|---|
-| `BASE_CASE` | Path to OpenFOAM base case | `/home/openfoam/rise_furnace/base_case_that_runs_chnage` |
-| `OUTPUT_DIR` | Where generated cases are saved | `/home/openfoam/rise_furnace/Testing_Create_Dataset` |
-| `CONTAINER_BASE_DIR` | Same as OUTPUT_DIR (used in run script) | `/home/openfoam/rise_furnace/Testing_Create_Dataset` |
-| `N_LHS_SAMPLES` | Number of parameter study cases | `22` |
-| `LHS_SEED` | Random seed for reproducibility | `42` |
-| `MAX_PARALLEL_JOBS` | Parallel simulation jobs | `3` |
+**Per-case stages:**
 
----
+1. Draw $(T_{\text{set}}, c_x, c_y)$ from the LHS plan
+2. Geometric feasibility check (cylinder fits inside furnace with clearance)
+3. Build a self-contained OpenFOAM case directory (parameterized Gmsh script + boundary conditions)
+4. Mesh, split into 12 regions, compute view-factor matrix, run transient CHT solve
+5. Convergence filter (`N_t ≥ 300`, `t_last ≥ 3000` s) and HDF5 export
 
-## Step-by-Step
+**Outputs:**
+- `dataset_v2_all_regions_clean.h5` — 78 converged cases at Δt = 10 s
+- One HDF5 group per simulation, with per-region `coords`, `T(t, n_cells)`,
+  and parameter attributes (`T_set`, `cx`, `cy`, `cz`, `radius`, `height`)
 
-### Step 1 — Generate cases
-
-```bash
-make create-cases
-```
-
-Creates case folders inside `OUTPUT_DIR`:
-
-```
-Testing_Create_Dataset/
-├── case001_Tset1000_cy180mm_.../
-├── case002_Tset950_cy150mm_.../
-├── ...
-├── case_manifest.json
-└── run_all_openfoam.sh
-```
-
-### Step 2 — Validate (optional but recommended)
-
-```bash
-make validate
-```
-
-### Step 3 — Run simulations
-
-```bash
-cd /home/openfoam/rise_furnace/Testing_Create_Dataset
-bash run_all_openfoam.sh
-```
-
-Monitor progress:
-
-```bash
-tail -f parallel_logs/*.log
-```
-
-### Step 4 — Build ML dataset (PhysicsNeMo container)
-
-```bash
-docker run --rm -it --gpus all -u 0:0 \
-  -v /home/openfoam/rise_furnace:/workspace/rise_furnace \
-  nvcr.io/nvidia/physicsnemo/physicsnemo:25.06 bash
-
-cd /workspace/rise_furnace/Simulating_Heat_Treatment_of_Cast_Metal_Products_using_OpenFOAM/Dataset_creation
-pip install python-dotenv
-make create-dataset
-```
-
-Output: `Testing_Create_Dataset/dataset_cylinder_features.h5`
+This dataset is the shared input to all three surrogates.
 
 ---
 
-## Makefile Commands
+## 2. AI Surrogate Models
 
-| Command | Description |
+All three surrogates target the same task — autoregressive next-step
+temperature prediction across all 12 furnace regions — but differ
+fundamentally in how they represent space.
+
+| Surrogate | Spatial primitive | Backbone | Parameters | Steel MAE (Phase 1) | R² (Phase 1) |
+|---|---|---|---|---|---|
+| **GNN**       | Mesh node     | MeshGraphNet (PhysicsNeMo)   | 0.70 M   | **2.06 K**   | **0.9996** |
+| **FNO**       | Voxel         | 3D Fourier Neural Operator   | 22.4 M   | 55.86 K      | 0.7449     |
+| **DeepONet**  | Sensor + query| `DeepONetArch` (PhysicsNeMo) | 3.72 M   | 381.83 K     | < 0        |
+
+Phase 1 = in-distribution rollout (t ∈ [200, 2760] s) on 7 held-out test
+cases. Heater regions are excluded (clamped to `T_set`, never predicted).
+
+The graph-based surrogate, despite having the smallest parameter count,
+outperforms the FNO and DeepONet by one and two orders of magnitude
+respectively — because its message-passing primitive directly mirrors
+the local stencil structure of the finite-volume CHT solver.
+
+### 2.1 GNN_PhysicsNeMo_Official/
+
+Physics-informed MeshGraphNet that treats all 12 furnace regions as one
+**unified graph** (~13.6 k nodes, ~150 k edges), so the network learns
+cross-region heat transfer (conduction, convection, radiation) end-to-end.
+
+- 4 message-passing layers, 128 hidden units
+- 16 node features, 5 edge features
+- Region-weighted data loss + 4-term physics loss (Fourier / Newton / Stefan-Boltzmann / energy balance)
+- Pushforward training for autoregressive stability
+- See [`GNN_PhysicsNeMo_Official/README.md`](GNN_PhysicsNeMo_Official/README.md)
+
+### 2.2 FNO_PhysicsNeMo_Official/
+
+3D Fourier Neural Operator that interpolates each per-cell field onto a
+regular `30 × 36 × 54` Cartesian voxel grid aligned with the furnace
+bounding box, then operates on a truncated frequency spectrum.
+
+- 3 Fourier layers, modes `[15, 18, 27]`, 32 latent channels
+- InstanceNorm3d + GELU activations
+- One-shot prediction of $T_{\text{next}}$
+- See [`FNO_PhysicsNeMo_Official/README.md`](FNO_PhysicsNeMo_Official/README.md)
+
+### 2.3 DeepONet_PhysicsNeMo_Official/
+
+Deep Operator Network built on the official NVIDIA PhysicsNeMo Sym
+`DeepONetArch`, with a `FullyConnectedArch` branch and trunk.
+
+- Branch: 3 × 256 MLP, 2,160 sensors (10 × 12 × 18 lattice)
+- Trunk: 4 × 256 MLP, 1,024 query points per sample
+- Latent dim 128, element-wise product + learned linear output
+- See [`DeepONet_PhysicsNeMo_Official/README.md`](DeepONet_PhysicsNeMo_Official/README.md)
+
+---
+
+## 3. Software Requirements (shared)
+
+| Component | Version |
 |---|---|
-| `make create-cases` | Generate OpenFOAM parameter study cases |
-| `make validate` | Validate generated cases |
-| `make create-dataset` | Build normalised HDF5 dataset |
-| `make test` | Run unit tests |
-| `make lint` | Run ruff linter |
-| `make clean` | Remove Python cache files |
+| OS | Linux (Ubuntu 22.04 / WSL2) or HPC Linux |
+| Python | 3.10+ |
+| PyTorch | 2.x with CUDA 12.x |
+| NVIDIA PhysicsNeMo (+ Sym for DeepONet) | 25.06 |
+| CUDA Toolkit | 12.1+ |
+| OpenFOAM | v2412 (Dataset_creation only) |
+| Gmsh | 4.13 (Dataset_creation only) |
+| HDF5 | 1.12+ |
+| NumPy / SciPy / h5py / PyYAML / matplotlib | latest stable |
+
+The complete software stack can be bundled into a single Apptainer
+(Singularity) image (`physicsnemo_25.06.sif`). Each sub-project README
+shows both the Apptainer-based and direct-host install paths.
 
 ---
 
-## Dataset Format
+## 4. Hardware Requirements (shared)
 
-The output HDF5 file contains:
-
-| Key | Shape | Description |
+| Stage | Recommended | Minimum |
 |---|---|---|
-| `X_norm` | `(N, 15)` | Normalised input features |
-| `Y_norm` | `(N, 1)` | Normalised temperature |
-| `X_mean`, `X_std` | `(15,)` | Normalisation parameters |
-| `Y_mean`, `Y_std` | scalar | Normalisation parameters |
-| `sim_start_indices` | `(n_sims,)` | Row boundaries per simulation |
+| OpenFOAM CHT solve (per case) | 16-core CPU | 8-core CPU |
+| Surrogate training | 1× NVIDIA A100 / A40 | 1× GPU ≥ 24 GB VRAM |
+| Surrogate inference | any CUDA-capable GPU | CPU also works |
 
-Feature columns (order is fixed — do not change after first training run):
-
-```
-x, y, z, t, T_set, cx, cy, cz, radius, height, volume, mass, kappa, Cp, rho
-```
+A full OpenFOAM CHT solve takes ~10 hours per case on CPU; a trained
+surrogate completes the same 326-step rollout in seconds.
 
 ---
 
-## Troubleshooting
+## 6. Headline Results
 
-**`python: command not found`**
-```bash
-sed -i 's/python -m/python3 -m/g' Makefile
-```
+| Aspect | OpenFOAM | Best surrogate (GNN) |
+|---|---|---|
+| Per-case wall-clock | ~10 hours | a few seconds |
+| Steel cylinder MAE (Phase 1) | reference | **2.06 K** |
+| Steel cylinder R² (Phase 1) | reference | **0.9996** |
+| Industrial control resolution | n/a | within ±10 K (in-distribution) |
 
-**`externally-managed-environment` pip error**
-```bash
-source .venv/bin/activate
-pip install -e .
-```
+The graph-based surrogate is the only one of the three to meet the ±10 K
+control resolution typical of industrial heat-treatment furnaces under
+in-distribution rollout, while reducing per-case turnaround from
+HPC-allocation scale to engineering-workstation scale.
 
-**Cases saved to wrong folder**
-```bash
-python3 -c "from configs.defaults import PipelineConfig; print(PipelineConfig().output_dir)"
-```
+---
 
-**`.venv` missing after container restart**
-```bash
-ls /home/openfoam/rise_furnace/Simulating_Heat_Treatment_of_Cast_Metal_Products_using_OpenFOAM/Dataset_creation/.venv
-# if missing, re-run the setup steps above
-```
+## 8. License
+
+To be specified.
