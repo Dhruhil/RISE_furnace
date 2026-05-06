@@ -20,7 +20,7 @@ REGION_IDS = {
 }
 HEATER_REGIONS = {f"heater_{i}" for i in range(1, 9)} | {"brick_heater"}
 REGION_PROPERTIES = {
-    "steel_cylinder": {"kappa": 80.0, "Cp": 450.0, "rho": 7800.0},  # was 60.0 (bug fix)
+    "steel_cylinder": {"kappa": 80.0, "Cp": 450.0, "rho": 7800.0},  
     "inner_box":      {"kappa": 0.026, "Cp": 1005.0, "rho": 1.2},
     "outer_box":      {"kappa": 1.5, "Cp": 900.0, "rho": 1800.0},
     "brick_heater":   {"kappa": 1.5, "Cp": 900.0, "rho": 1800.0},

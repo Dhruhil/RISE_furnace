@@ -168,7 +168,6 @@ def main():
     else:
         print(f"  Physics: cosine 0.003 -> 0.0005 (autograd Laplacian + Newton + SB)")
     print(f"  Pushforward: " + ("OFF" if args.no_pushforward else "w2 ramp 0 -> 1.0 (10% warmup)"))
-    print(f"  LR warmup: linear 5 epochs")
     print(f"  Dataset: {cfg.dataset_path}\n{sep}\n")
 
     logger = setup_logging(cfg)

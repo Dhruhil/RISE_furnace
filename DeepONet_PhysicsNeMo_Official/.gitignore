@@ -1,4 +1,5 @@
 *.h5
+*.sh
 __pycache__/
 *.pyc
 .venv/
