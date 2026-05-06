@@ -33,6 +33,7 @@ Each training sample is a single graph snapshot containing all 13,648 nodes of o
 
 ```
 GNN_PhysicsNeMo_Official/
+├── README.md
 ├── configs/
 │   └── base_config.py              # CONFIG dataclass, REGION_MATERIALS, physics constants
 ├── data/
@@ -42,18 +43,11 @@ GNN_PhysicsNeMo_Official/
 ├── utils/
 │   ├── checkpoint.py               # CheckpointManager: best-model + latest tracking
 │   ├── logging.py                  # setup_logging, log_metrics (W&B optional)
-│   └── metrics.py                  # MAE, RMSE, R², within-tolerance helpers
+│   └── metrics.py                  # MAE, R², within-tolerance helpers
 ├── evaluation/
 │   ├── evaluate.py                 # Per-region rollout MAE → JSON (Phase 1 / Phase 2)
 │   └── save_rollout_temps.py       # Save T_pred and T_true per timestep → HDF5
 ├── train_unified.py                # Main training entry point
-│
-│   ─── SBATCH scripts ───
-├── run_alvis_gnn_v5_FIX.sh         # ★ FINAL TRAINING SCRIPT — use this for the thesis run
-├── run_sanity_test.sh              # 1-batch smoke test before launching training
-├── run_eval_gnn_v5_snapshot.sh     # Final evaluation against the v5_FIX snapshot
-├── run_save_temps_gnn.sh           # Dump rollout temperatures for thesis figures
-│
 └── outputs/                        # Checkpoints, logs, evaluation results (created at runtime)
 ```
 
@@ -63,19 +57,14 @@ GNN_PhysicsNeMo_Official/
 
 ### 3.1 Hardware
 
-The thesis run was performed on the **C3SE Alvis** HPC cluster.
+| Resource              | Recommended (training)              | Minimum to reproduce            |
+|-----------------------|-------------------------------------|---------------------------------|
+| GPU                   | 1× NVIDIA A100 (80 GB) or A40       | 1× GPU with ≥ 24 GB VRAM        |
+| CPU                   | 16 cores                            | 8 cores                         |
+| System RAM            | ≥ 64 GB                             | ≥ 32 GB                         |
+| Disk (working set)    | ~30 GB (dataset + checkpoints)      | ~20 GB                          |
 
-| Resource                    | Used for the thesis run            | Minimum to reproduce            |
-|-----------------------------|------------------------------------|---------------------------------|
-| GPU                         | 1× NVIDIA A100fat (80 GB HBM2e)    | 1× GPU with ≥ 24 GB VRAM        |
-| CPU                         | 16 cores (1 SLURM task)            | 8 cores                         |
-| System RAM                  | ~64 GB available to the job        | ≥ 32 GB                         |
-| Disk (working set)          | ~30 GB (dataset + checkpoints)     | ~20 GB                          |
-| Wall-clock — training       | ~80 h (150 epochs, A100fat)        | depends on GPU                  |
-| Wall-clock — sanity test    | ~5 min on A40                      | —                               |
-| Wall-clock — evaluation     | ~30 min on A40                     | —                               |
-
-**GPU notes.** The unified graph holds 13,648 nodes and ~150k edges per sample, so a single forward + pushforward pass keeps VRAM low (~6 GB at `batch=4`). The 80 GB A100fat was chosen for fast wall-clock, not for memory; an A40 (48 GB) or RTX 3090 (24 GB) reproduces the run at the same `batch=4`. Below 24 GB, drop to `batch=2` and double the epoch count or accept slower convergence.
+**GPU notes.** The unified graph holds 13,648 nodes and ~150k edges per sample, so a single forward + pushforward pass keeps VRAM low (~6 GB at `batch=4`). An A40 (48 GB) or RTX 3090 (24 GB) reproduces the run at the same `batch=4`. Below 24 GB, drop to `batch=2` and double the epoch count or accept slower convergence.
 
 **Without a GPU**, the code falls back to CPU automatically, but a full 150-epoch run would take weeks — not recommended.
 
@@ -83,83 +72,123 @@ The thesis run was performed on the **C3SE Alvis** HPC cluster.
 
 | Component                | Version used         | Notes                                                |
 |--------------------------|----------------------|------------------------------------------------------|
-| OS (cluster nodes)       | Linux (Alvis)        | Any modern x86-64 Linux works                        |
-| CUDA                     | 12.x (in the sif)    | Provided by the Apptainer image                      |
-| Python                   | 3.10                 | Provided by the image                                |
+| OS                       | Linux                | Any modern x86-64 Linux works                        |
+| CUDA                     | 12.x                 |                                                      |
+| Python                   | 3.10                 |                                                      |
 | PyTorch                  | 2.x                  | With CUDA support                                    |
-| PyTorch Geometric        | latest in image      | For `Data`, `Batch`, `DataLoader`                    |
+| PyTorch Geometric        | latest               | For `Data`, `Batch`, `DataLoader`                    |
 | NVIDIA PhysicsNeMo       | 25.06                | Primary MeshGraphNet backend                         |
-| DGL                      | latest in image      | Required by PhysicsNeMo's MGN backend                |
+| DGL                      | latest               | Required by PhysicsNeMo's MGN backend                |
 | NumPy, SciPy             | latest               | `cKDTree` for KNN edge construction                  |
 | h5py                     | latest               | HDF5 dataset I/O                                     |
-| Apptainer / Singularity  | ≥ 1.1                | To exec the `.sif` image                             |
-| SLURM                    | any recent version   | All `.sh` files are SBATCH scripts                   |
 
-The complete software stack is bundled in a single Apptainer image:
+The complete software stack can be bundled into a single Apptainer
+(Singularity) image (`physicsnemo_25.06.sif`) so that no Python packages
+need to be installed on the host. If `physicsnemo` is not importable for
+any reason, the model auto-detects this and silently switches to the
+in-house `_FallbackMGN` implementation — training still runs with the
+same dynamics.
 
+Alternatively, install Python dependencies directly:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install nvidia-physicsnemo dgl
+pip install torch-geometric
+pip install numpy scipy h5py pyyaml
 ```
-/mimer/NOBACKUP/groups/revar/physicsnemo_25.06.sif
-```
-
-All `.sh` scripts in this folder execute training/evaluation inside that image via `apptainer exec --nv ... <script>`, so **you do not need to install any Python packages on the host node**. If `physicsnemo` is not importable for any reason, the model auto-detects this and silently switches to the in-house `_FallbackMGN` implementation — training still runs with the same dynamics.
 
 ### 3.3 Input dataset
 
-Path is resolved from `configs/base_config.py`:
-
-```
-/mimer/NOBACKUP/groups/revar/GNN_PhysicsNeMo_Official/dataset_v2_all_regions_clean.h5
-```
-
-Built upstream by `Dataset_creation/scripts/create_all_regions_dataset.py`. The dataset contains **78 OpenFOAM simulation cases** in total. Each HDF5 group is one simulation holding `times`, per-region `coords` and `T(t, n_cells)` arrays, plus parameter attributes (`T_set`, `cx`, `cy`, `cz`, `radius`, `height`).
+The dataset path is configured in `configs/base_config.py`. The dataset contains **78 OpenFOAM simulation cases** in total, built upstream by `Dataset_creation/scripts/create_all_regions_dataset.py`. Each HDF5 group is one simulation holding `times`, per-region `coords` and `T(t, n_cells)` arrays, plus parameter attributes (`T_set`, `cx`, `cy`, `cz`, `radius`, `height`).
 
 ---
 
-## 4. Running on Alvis (SLURM)
+## 4. How to Run
 
-All `.sh` files are SBATCH scripts targeting Alvis (project `NAISS2026-4-712`).
+### 4.1 Set the dataset path
 
-### 4.1 Sanity test (always first)
+Open `configs/base_config.py` and point `dataset_path` to your local copy
+of the OpenFOAM-derived HDF5 dataset (78 cases). Output directories
+(`outputs/`, `outputs/checkpoints`, `outputs/logs`) are created
+automatically on the first run.
+
+### 4.2 Train
+
+The reference training command used for the thesis run:
 
 ```bash
-sbatch run_sanity_test.sh
+apptainer exec --nv --cleanenv \
+  <path_to>/physicsnemo_25.06.sif \
+  python -u train_unified.py \
+    --epochs 150 \
+    --lr 5e-5 \
+    --batch 4 \
+    --lam 0.003 \
+    --checkpoint_dir outputs/GNN_<run_name>/checkpoints
 ```
 
-Loads one batch, runs forward + physics-loss + backward. Verifies dataset, graph construction, and model wiring. Approx. 5 min on an A40. Always run this before launching the full training.
-
-### 4.2 Full training — the main run
+If you have the dependencies installed directly on the host (no Apptainer),
+the same flags apply:
 
 ```bash
-sbatch run_alvis_gnn_v5_FIX.sh
+python -u train_unified.py \
+    --epochs 150 \
+    --lr 5e-5 \
+    --batch 4 \
+    --lam 0.003 \
+    --checkpoint_dir outputs/GNN_<run_name>/checkpoints
 ```
 
-**This is the final training script for the thesis.** It trains for 150 epochs on an A100fat with:
+| Flag | Value | Description |
+|---|---|---|
+| `--epochs` | 150 | Number of training epochs |
+| `--lr` | 5e-5 | Base learning rate (AdamW) |
+| `--batch` | 4 | Mini-batch size |
+| `--lam` | 0.003 | Physics-loss weight λ |
+| `--checkpoint_dir` | `outputs/.../checkpoints` | Directory for `best_model.pt`, `best_model_eval_snapshot.pt`, `latest.pt` |
 
-| Setting          | Value         |
-|------------------|---------------|
-| Epochs           | 150           |
-| Learning rate    | 5e-5          |
-| Batch size       | 4             |
-| Physics λ        | 0.003         |
-| GPU              | A100fat (1×)  |
-| Wall time budget | 88 h          |
+Reference wall-clock on a single NVIDIA A100: ≈ 80 hours for 150 epochs.
 
 Checkpoints land in:
 
 ```
-outputs/GNN_v5_FIX_150ep_<timestamp>/checkpoints/
+outputs/GNN_<run_name>/checkpoints/
     ├── best_model.pt                  # selected on val data-only loss
     ├── best_model_eval_snapshot.pt    # pinned snapshot for paper-quality eval
     └── latest.pt                      # rolling — for resuming
 ```
 
-The script verifies two source patches before launching, so it refuses to run if either `data/dataset_unified.py` (missing `_parse_mm`) or `train_unified.py` (missing `args.checkpoint_dir`) has reverted to a pre-fix state.
+### 4.3 Evaluate (autoregressive rollout)
 
-### 4.3 Evaluation
+After training, evaluate the best checkpoint on the held-out test cases:
 
 ```bash
-sbatch run_eval_gnn_v5_snapshot.sh        # full per-region rollout MAE → JSON
-sbatch run_save_temps_gnn.sh              # dump T_pred / T_true HDF5 for figures
+# Per-region rollout MAE → JSON (Phase 1 / Phase 2)
+apptainer exec --nv --cleanenv \
+  <path_to>/physicsnemo_25.06.sif \
+  python -u evaluation/evaluate.py \
+    --checkpoint outputs/GNN_<run_name>/checkpoints/best_model.pt
+
+# Dump T_pred / T_true HDF5 for thesis figures
+apptainer exec --nv --cleanenv \
+  <path_to>/physicsnemo_25.06.sif \
+  python -u evaluation/save_rollout_temps.py \
+    --checkpoint outputs/GNN_<run_name>/checkpoints/best_model.pt
+```
+
+This produces per-region Phase 1 / Phase 2 MAE and R², saved as JSON
+under `outputs/GNN_<run_name>/evaluation/`.
+
+### 4.4 Quick sanity check (optional)
+
+To verify the data pipeline and model wiring without running a full training,
+launch with a reduced epoch count:
+
+```bash
+apptainer exec --nv --cleanenv \
+  <path_to>/physicsnemo_25.06.sif \
+  python -u train_unified.py --epochs 1 --batch 4
 ```
 
 ---
@@ -195,11 +224,8 @@ The convection term also includes an overshoot penalty `ReLU(T_pred − T_set)` 
 
 - **LR warmup:** 5 epochs from `0.1·lr → lr`
 - **Pushforward weight:** zero for the first 10 % of epochs, then linearly ramped to 1.0
-- **Physics λ:** held at 0.003 throughout (CLI flag `--lam` in `run_alvis_gnn_v5_FIX.sh`)
+- **Physics λ:** held at 0.003 throughout
 
-### 5.3 Splits (T_set-stratified)
-
-A fixed shuffle splits the **78 cases** into train / val / test, stratified across the three setpoints (T_set = 1173 K, 1273 K, 1373 K). Normalisation statistics (`T_mean`, `T_std`, `dT_mean`, `dT_std`) are computed on the training split only.
 
 ---
 
@@ -217,13 +243,12 @@ MAE is reported in Kelvin (K).
 
 ### 6.1 Output artefacts
 
-After running evaluation, the following files appear in `outputs/GNN_v5_FIX_150ep_<timestamp>/evaluation/`:
+After running evaluation, the following files appear in `outputs/GNN_<run_name>/evaluation/`:
 
 | File                          | Contents                                                  |
 |-------------------------------|-----------------------------------------------------------|
 | `gnn_rollout_results.json`    | Per-region Phase 1 / Phase 2 MAE, mean ± std across sims  |
 | `rollout_temps.h5`            | `T_pred(t)` and `T_true(t)` per test simulation           |
-| `logs/eval_<jobid>.log`       | Full SLURM log of the evaluation run                      |
 
 The JSON file has this top-level structure:
 
@@ -252,7 +277,7 @@ All hyperparameters live in `configs/base_config.py`. The most useful ones to tu
 | `hidden_features`          | 128     | MLP / message hidden width               |
 | `n_message_passing_layers` | 4       | Number of MGN blocks                     |
 | `graph_k_neighbors`        | 12      | KNN intra-region edge count              |
-| `batch_size`               | 4       | OK on A100fat                            |
+| `batch_size`               | 4       | OK on A100/A40                           |
 | `n_epochs`                 | 150     | CLI flag `--epochs` overrides            |
 | `learning_rate`            | 5e-5    | CLI flag `--lr` overrides                |
 | `dt`                       | 10.0    | Simulation timestep (s)                  |
@@ -266,19 +291,27 @@ Per-region material properties (κ, Cp, ρ) live in the `REGION_MATERIALS` dict 
 ## 8. Reproducing the Thesis Result
 
 ```bash
-# 1. Smoke test
-sbatch run_sanity_test.sh
+# 1. Full training (≈ 80 h on A100, 150 epochs)
+apptainer exec --nv --cleanenv \
+  <path_to>/physicsnemo_25.06.sif \
+  python -u train_unified.py \
+    --epochs 150 --lr 5e-5 --batch 4 --lam 0.003 \
+    --checkpoint_dir outputs/GNN_<run_name>/checkpoints
 
-# 2. Full training (≈ 80 h on A100fat) — the main run
-sbatch run_alvis_gnn_v5_FIX.sh
-
-# 3. Pin the best checkpoint as the eval snapshot
-cd outputs/GNN_v5_FIX_150ep_<timestamp>/checkpoints
+# 2. Pin the best checkpoint as the eval snapshot
+cd outputs/GNN_<run_name>/checkpoints
 cp best_model.pt best_model_eval_snapshot.pt
 
-# 4. Evaluate
-sbatch run_eval_gnn_v5_snapshot.sh
-sbatch run_save_temps_gnn.sh
+# 3. Evaluate
+apptainer exec --nv --cleanenv \
+  <path_to>/physicsnemo_25.06.sif \
+  python -u evaluation/evaluate.py \
+    --checkpoint outputs/GNN_<run_name>/checkpoints/best_model_eval_snapshot.pt
+
+apptainer exec --nv --cleanenv \
+  <path_to>/physicsnemo_25.06.sif \
+  python -u evaluation/save_rollout_temps.py \
+    --checkpoint outputs/GNN_<run_name>/checkpoints/best_model_eval_snapshot.pt
 ```
 
 ---
@@ -287,17 +320,10 @@ sbatch run_save_temps_gnn.sh
 
 | Symptom                                              | Cause                                              | Resolution                                                                |
 |------------------------------------------------------|----------------------------------------------------|---------------------------------------------------------------------------|
-| `ImportError: physicsnemo`                           | Image not loaded or wrong sif                      | Confirm `physicsnemo_25.06.sif` is being used; fallback MGN runs anyway   |
-| `run_alvis_gnn_v5_FIX.sh` aborts with "patch missing"| Stale `dataset_unified.py` or `train_unified.py`   | Re-pull the v5_FIX patch — script greps for `_parse_mm` and `args.checkpoint_dir` |
+| `ImportError: physicsnemo`                           | Package not installed                              | Use the Apptainer image, or `pip install nvidia-physicsnemo dgl`; fallback MGN runs anyway |
 | `Expected 16 node features, got 15`                  | `node_in_features=15` in config                    | Confirm `base_config.py` has `node_in_features: int = 16`                 |
 | Phase 2 MAE >> Phase 1 MAE                           | Pushforward weight stayed at 0                     | Check `get_pushforward_weight` — must ramp after 10 % of epochs           |
+| OOM at `batch=4`                                     | GPU has < 24 GB VRAM                               | Drop to `batch=2` and double the epoch count                              |
 
 ---
 
-## 10. Notes
-
-- **`run_alvis_gnn_v5_FIX.sh` is the canonical training script.** All other `.sh` files are auxiliary (sanity test, evaluation, figure data dump).
-- **Heater clamping.** Predictions for heater regions are masked to zero in the loss and overwritten with the ground-truth `T_set` during rollout. This treats heaters as Dirichlet boundary conditions, mirroring the OpenFOAM setup.
-- **Edge normalisation.** Edge distances are divided by their dataset-wide mean for training stability — same scaling applied at evaluation.
-- **Two-step pushforward.** During training the model also predicts step `t+2Δt` from its own step `t+Δt` output (no gradient flow through the first prediction). This drastically reduces compounding rollout error.
-- **Backend transparency.** The model autodetects `physicsnemo` and falls back to a pure-PyTorch implementation; both produce equivalent training dynamics on the test set within numerical noise.
