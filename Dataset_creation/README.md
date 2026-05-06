@@ -476,7 +476,7 @@ Dataset_k8/
 │   ├── cylinder_params.json                       ← feature values
 │   └── log.chtMultiRegionFoam
 ├── case002_.../
-├── ... (45 cases total)
+├── ... 
 ├── case_manifest.json
 ├── dataset_cylinder_features.h5                   ← Step 4A output
 ├── dataset_v2_all_regions.h5                      ← Step 4B output (raw)
