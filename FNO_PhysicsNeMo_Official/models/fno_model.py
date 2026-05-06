@@ -8,10 +8,15 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-# Force fallback FNO — PhysicsNeMo's 3D FNO creates oversized internal tensors
-# Our fallback is lean and efficient for this grid size
-PHYSICSNEMO_FNO = False
-print("[INFO] Using lean fallback 3D FNO (optimised for heat treatment grid)")
+# Use NVIDIA PhysicsNeMo's official 3D FNO when available; fall back to the
+# in-house implementation if the import fails.
+try:
+    from physicsnemo.models.fno import FNO as _PhysicsNeMoFNO
+    PHYSICSNEMO_FNO = True
+    print("[INFO] Using official NVIDIA PhysicsNeMo 3D FNO")
+except ImportError:
+    PHYSICSNEMO_FNO = False
+    print("[INFO] physicsnemo FNO not available — using fallback 3D FNO")
 
 
 class _SpectralConv3d(nn.Module):

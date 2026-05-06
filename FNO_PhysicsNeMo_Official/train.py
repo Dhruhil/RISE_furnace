@@ -8,11 +8,6 @@ solves the full Navier-Stokes + heat equations. The physics loss here
 acts only as a gentle regulariser (static λ=0.003) to improve rollout
 stability — the data itself already contains the physics.
 
-v4 FINAL upgrades (April 2026):
-  - AdamW optimizer with weight_decay=1e-4
-  - Gaussian noise injection σ=0.01 (~2.66K) on input temperature
-  - Static physics λ=0.003 (stable rollout)
-  - Pushforward ramp 0→1.0, warmup 10%
 """
 from __future__ import annotations
 import sys, time, argparse, json, math
