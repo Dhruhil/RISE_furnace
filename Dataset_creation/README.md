@@ -42,7 +42,7 @@ an inner air cavity, and eight electrical heating elements.
 `brick_heater`, `outer_box`.
 
 **Sampled parameters.** Per-case parameters are drawn by Latin Hypercube
-Sampling (LHS) from the discrete ranges defined in `configs/parameters_k8.py`:
+Sampling (LHS) from the discrete ranges defined in `configs/parameters.py`:
 
 | Parameter            | Symbol               | Unit    | Range / Value                           |
 | -------------------- | -------------------- | ------- | --------------------------------------- |
@@ -70,7 +70,7 @@ Sampling (LHS) from the discrete ranges defined in `configs/parameters_k8.py`:
  │ sample │  ───►  │  cases   │  ───► │   OpenFOAM   │ ───► │  HDF5    │ ───►  │ dataset  │
  │  45    │        │          │       │  (parallel)  │      │ datasets │       │          │
  └────────┘        └──────────┘       └──────────────┘      └──────────┘       └──────────┘
-create_cases.py  validate_cases.py   run_dataset_k8.sh     create_dataset.py  clean_dataset.py
+create_cases.py  validate_cases.py   run_all_openfoam.sh    create_dataset.py  clean_dataset.py
                                                           create_all_regions  (in OUTPUT_DIR)
                                                            _dataset.py
 ```
@@ -100,20 +100,15 @@ Dataset_creation/
 │   ├── __init__.py
 │   ├── defaults.py                 — PipelineConfig (reads .env)
 │   ├── furnace.py                  — furnace bounds + heater region names
-│   └── parameters.py               — active parameter file (runtime)
+│   └── parameters.py               — sampling ranges (LHS source of truth)
 │
 ├── scripts/
-│   ├── python/
-│   │   ├── __init__.py
-│   │   ├── create_cases.py                 — Step 1: LHS case generation
-│   │   ├── validate_cases.py               — Step 2: pre-run sanity check
-│   │   ├── create_dataset.py               — Step 4A: steel-cylinder HDF5
-│   │   └── create_all_regions_dataset.py   — Step 4B: all-regions HDF5
-│   │
-│   └── sbatch/
-│       ├── run_dataset_k8.sh               — full pipeline (SLURM)
-│       ├── run_missing_cases.sh            — resume recovery
-│       └── run_vtk_and_dataset.sh          — post-hoc VTK + dataset
+│   └── python/
+│       ├── __init__.py
+│       ├── create_cases.py                 — Step 1: LHS case generation
+│       ├── validate_cases.py               — Step 2: pre-run sanity check
+│       ├── create_dataset.py               — Step 4A: steel-cylinder HDF5
+│       └── create_all_regions_dataset.py   — Step 4B: all-regions HDF5
 │
 ├── src/
 │   ├── core/
@@ -161,7 +156,7 @@ Dataset_creation/
 
 ## 5. Prerequisites
 
-- Docker (local) or SLURM with Apptainer (cluster)
+- Docker (local) or Apptainer (HPC)
 - Custom image `openfoam-python` built from OpenFOAM 2412 + Python 3
 - NVIDIA PhysicsNeMo 25.06 image for dataset assembly
 - Gmsh ≥ 4.13 (external binary for `.geo` → `.msh` conversion)
@@ -198,9 +193,9 @@ cp .env.example .env        # edit paths afterwards
 ### 5.3 Configure (`.env`)
 
 ```bash
-BASE_CASE=/mimer/NOBACKUP/groups/revar/base_case_that_runs_chnage
-OUTPUT_DIR=/mimer/NOBACKUP/groups/revar/Dataset_k8
-CONTAINER_BASE_DIR=/mimer/NOBACKUP/groups/revar/Dataset_k8
+BASE_CASE=<path_to>/base_case_that_runs_chnage
+OUTPUT_DIR=<path_to>/Dataset_k8
+CONTAINER_BASE_DIR=<path_to>/Dataset_k8
 N_LHS_SAMPLES=45
 LHS_SEED=42
 MAX_PARALLEL_JOBS=45
@@ -210,38 +205,85 @@ MAX_PARALLEL_JOBS=45
 
 ## 6. Usage
 
-### 6.1 Cluster (SLURM / Alvis) — recommended
+The pipeline is driven by Python entry-points and a `Makefile`. The five
+steps below are normally executed in order.
 
-A single command launches the full end-to-end pipeline:
-
-```bash
-sbatch scripts/sbatch/run_dataset_k8.sh
-```
-
-This allocates 45 CPUs on one node for up to 10 hours and executes Steps 1–4
-automatically. Step 5 is run in the output directory (see §7).
-
-Recovery launch modes are also provided:
-
-| Script                                      | Use when                                     |
-| ------------------------------------------- | -------------------------------------------- |
-| `scripts/sbatch/run_dataset_k8.sh`          | Fresh full run (wipes previous output)       |
-| `scripts/sbatch/run_missing_cases.sh`       | Add more cases on top of an existing run     |
-| `scripts/sbatch/run_vtk_and_dataset.sh`     | Simulations completed but VTK export missing |
-
-### 6.2 Local (Docker)
-
-Run each step manually from inside the `openfoam-python` container:
+### 6.1 Step 1 — Generate cases
 
 ```bash
-make create-cases           # Step 1
-make validate               # Step 2
-bash $OUTPUT_DIR/run_all_openfoam.sh   # Step 3 (parallel launcher)
-make create-dataset         # Step 4A
-python -m scripts.create_all_regions_dataset   # Step 4B
+make create-cases
+# or:
+python -m scripts.python.create_cases
 ```
 
-### 6.3 Makefile reference
+Builds 45 OpenFOAM case directories under `$OUTPUT_DIR` and writes
+`case_manifest.json`.
+
+### 6.2 Step 2 — Validate cases
+
+```bash
+make validate
+# or:
+python -m scripts.python.validate_cases
+```
+
+Sanity-checks each case (geometry, mesh script, thermophysicals, parameters)
+before submitting expensive simulations.
+
+### 6.3 Step 3 — Mesh and solve (OpenFOAM)
+
+After validation, `src/utils/scripts.py` writes a launcher
+`run_all_openfoam.sh` into `$OUTPUT_DIR` that invokes meshing and
+`chtMultiRegionFoam` for every case in parallel. From within the
+`openfoam-python` container:
+
+```bash
+cd $OUTPUT_DIR
+bash run_all_openfoam.sh
+```
+
+This is the longest step (dominated by `chtMultiRegionFoam`). On a
+single 16-core HPC node, expect ≈ 10 hours wall-clock for 45 cases.
+
+### 6.4 Step 4 — Build HDF5 datasets
+
+```bash
+make create-dataset
+# or:
+python -m scripts.python.create_dataset                  # 4A: steel-cylinder
+python -m scripts.python.create_all_regions_dataset      # 4B: all 12 regions
+```
+
+Two HDF5 files are produced:
+
+- `dataset_cylinder_features.h5` (steel cylinder only, 14-feature point cloud)
+- `dataset_v2_all_regions.h5` (all 12 regions, hierarchical schema)
+
+### 6.5 Step 5 — Clean dataset
+
+`clean_dataset.py` lives in `$OUTPUT_DIR` (not in this package) and applies
+filters to `dataset_v2_all_regions.h5`:
+
+```bash
+cd $OUTPUT_DIR
+apptainer exec <path_to>/physicsnemo_25.06.sif python3 clean_dataset.py \
+    --input  dataset_v2_all_regions.h5 \
+    --output dataset_v2_all_regions_clean.h5 \
+    --min-timesteps 300 \
+    --min-final-time 3000 \
+    --max-t-kelvin 1773
+```
+
+| Filter              | Default   | Action                                      |
+| ------------------- | --------- | ------------------------------------------- |
+| `--min-timesteps`   | 300       | Drop cases whose simulation crashed early   |
+| `--min-final-time`  | 3000.0 s  | Drop cases that did not reach the end time  |
+| `--max-t-kelvin`    | 1773.0 K  | Replace cells above this with `NaN`         |
+
+The output `dataset_v2_all_regions_clean.h5` is the file consumed by all
+three downstream surrogates (GNN, FNO, DeepONet).
+
+### 6.6 Makefile reference
 
 | Command              | Description                                   |
 | -------------------- | --------------------------------------------- |
@@ -277,7 +319,7 @@ valid `cylinder_params.json`. Failures are logged but do not abort the pipeline.
 
 ### Step 3 — Meshing and Simulation
 
-For each case, in parallel (one per CPU), the SBATCH script performs:
+For each case, in parallel (one per CPU), the launcher performs:
 
 1. **Gmsh meshing** — native binary, `.geo` → `.msh`
 2. **OpenFOAM meshing** — `gmshToFoam`, `topoSet`, `splitMeshRegions`
@@ -324,27 +366,9 @@ case_XXX/
 
 ### Step 5 — Dataset Cleaning
 
-`clean_dataset.py` (located in `$OUTPUT_DIR`, not in this package) applies
-three filters to `dataset_v2_all_regions.h5` and writes
-`dataset_v2_all_regions_clean.h5`:
-
-| Filter              | Default   | Action                                      |
-| ------------------- | --------- | ------------------------------------------- |
-| `--min-timesteps`   | 300       | Drop cases whose simulation crashed early   |
-| `--min-final-time`  | 3000.0 s  | Drop cases that did not reach the end time  |
-| `--max-t-kelvin`    | 1773.0 K  | Replace cells above this with `NaN`         |
-
-Run it as:
-
-```bash
-cd $OUTPUT_DIR
-apptainer exec $PHYSICSNEMO_SIF python3 clean_dataset.py \
-    --input  dataset_v2_all_regions.h5 \
-    --output dataset_v2_all_regions_clean.h5 \
-    --min-timesteps 300 \
-    --min-final-time 3000 \
-    --max-t-kelvin 1773
-```
+`clean_dataset.py` (located in `$OUTPUT_DIR`, not in this package) writes
+`dataset_v2_all_regions_clean.h5` after applying the three filters listed
+in §6.5.
 
 Note that Steps 4 and 5 apply different outlier strategies by design:
 
@@ -481,16 +505,16 @@ the thesis repository, all built on the NVIDIA PhysicsNeMo framework:
 
 ## 11. Reproducibility
 
-The pipeline is fully deterministic when `.env` and `parameters_k8.py` are
+The pipeline is fully deterministic when `.env` and `parameters.py` are
 unchanged:
 
 - The LHS seed is pinned at 42
-- `parameters_k8.py` is the single source of truth for all sampling ranges
+- `parameters.py` is the single source of truth for all sampling ranges
 - `case_manifest.json` records every parameter value per case
 - `cylinder_params.json` (per case) allows feature-matrix reconstruction
   independently of future code changes
 
-Re-running `run_dataset_k8.sh` produces bit-identical case parameters in the
+Re-running the pipeline produces bit-identical case parameters in the
 same order.
 
 ---
@@ -506,9 +530,6 @@ same order.
 | `Permission denied` during `apt-get`                          | Not running as root                          | `docker run -it --user root -v ... openfoam-python bash`     |
 | `.venv` missing after container restart                       | `.venv` outside the mounted volume           | Place `.venv` inside the mounted project directory           |
 | `viewFactorsGen` fails in `inner_box`                         | Boundary not marked as `viewFactorWall`      | Check `constant/inner_box/polyMesh/boundary` → `inGroups 2(wall viewFactorWall)` |
-| `chtMultiRegionFoam` diverges                                 | Bad initial `viewFactorField` at high `T_set`| Lower the upper bound of `T_set` in `parameters_k8.py`       |
+| `chtMultiRegionFoam` diverges                                 | Bad initial `viewFactorField` at high `T_set`| Lower the upper bound of `T_set` in `parameters.py`          |
 | VTK reader reports no `steel_cylinder`                        | Simulation crashed before writing output     | Inspect `log.chtMultiRegionFoam` for the failing case        |
 | Step 5 drops all cases                                        | Write interval too coarse                    | Reduce `writeInterval` in base case `controlDict`            |
-
----
-
