@@ -191,6 +191,3 @@ HPC-allocation scale to engineering-workstation scale.
 
 ---
 
-## 8. License
-
-To be specified.
