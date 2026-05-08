@@ -66,7 +66,7 @@ class FNOConfig:
     grad_clip:       float = 1.0
 
     # Data splits
-    val_fraction:  float = 0.14
+    val_fraction:  float = 0.13
     test_fraction: float = 0.10
 
     # Time
