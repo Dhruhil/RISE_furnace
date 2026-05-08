@@ -168,20 +168,40 @@ class FNO3DDataset(Dataset):
 
         # Train/val/test split by simulation
         n_sims = len(self._simulations)
-        n_test = max(1, int(n_sims * cfg.test_fraction))
-        n_val = max(1, int(n_sims * cfg.val_fraction))
-        n_train = n_sims - n_val - n_test
-
-        import random
-        shuffled = list(range(n_sims))
-        random.Random(42).shuffle(shuffled)
-
-        if split == "train":
-            self.sim_indices = shuffled[:n_train]
-        elif split == "val":
-            self.sim_indices = shuffled[n_train:n_train + n_val]
-        else:
-            self.sim_indices = shuffled[n_train + n_val:]
+        import random as _rand
+        _by_tset = {}
+        for _i, _s in enumerate(self._simulations):
+            _by_tset.setdefault(float(_s["T_set"]), []).append(_i)
+        
+        _train, _val, _test = [], [], []
+        _rng = _rand.Random(42)
+        for _tset in sorted(_by_tset):
+            _idxs = _by_tset[_tset][:]
+            _rng.shuffle(_idxs)
+            _n = len(_idxs)
+            _n_test = max(1, int(round(_n * cfg.test_fraction))) if _n >= 3 else 0
+            _n_val  = max(1, int(round(_n * cfg.val_fraction)))  if _n >= 2 else 0
+            if _n - _n_test - _n_val < 1:
+                _n_val = max(0, _n - _n_test - 1)
+            _test.extend(_idxs[:_n_test])
+            _val.extend(_idxs[_n_test:_n_test + _n_val])
+            _train.extend(_idxs[_n_test + _n_val:])
+        
+        # canonical order: train first, then val, then test (used for normalisation stats)
+        shuffled = _train + _val + _test
+        n_train = len(_train)
+        n_val   = len(_val)
+        n_test  = len(_test)
+        
+        split_map = {"train": _train, "val": _val, "test": _test}
+        print(f"  [stratified split] train={n_train} val={n_val} test={n_test}")
+        for _tset in sorted(_by_tset):
+            _tr = sum(1 for i in _train if float(self._simulations[i]["T_set"]) == _tset)
+            _vl = sum(1 for i in _val   if float(self._simulations[i]["T_set"]) == _tset)
+            _te = sum(1 for i in _test  if float(self._simulations[i]["T_set"]) == _tset)
+            print(f"    T_set={_tset:.0f}K  train={_tr} val={_vl} test={_te}")
+        
+        self.sim_indices = split_map[split]
 
         # Compute stats from train sims
         all_T = []
