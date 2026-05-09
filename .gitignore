@@ -32,3 +32,4 @@ __pycache__/
 
 # Large data
 *.h5
+*.sh
