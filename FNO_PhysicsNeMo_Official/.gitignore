@@ -1,0 +1,11 @@
+*.h5
+*.sh
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+outputs/
+*.log
+*.pt
+*.bak
+*.backup_*

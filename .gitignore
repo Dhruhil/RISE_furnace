@@ -1,0 +1,35 @@
+# Ignore everything
+*
+
+# Allow gitignore itself
+!.gitignore
+
+# Allow README
+!README.md
+
+# Allow these folders
+!Dataset_creation/
+!GNN_PhysicsNeMo_Official/
+!FNO_PhysicsNeMo_Official/
+!DeepONet_PhysicsNeMo_Official/
+
+# Allow contents inside them
+!Dataset_creation/**
+!GNN_PhysicsNeMo_Official/**
+!FNO_PhysicsNeMo_Official/**
+!DeepONet_PhysicsNeMo_Official/**
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual env
+.venv/
+
+# Logs
+*.log
+
+# Large data
+*.h5
+*.sh
