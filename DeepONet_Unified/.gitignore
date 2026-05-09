@@ -1,5 +1,0 @@
-outputs/ 
-__pycache__/ 
-*.pyc 
-*.pt 
-*.xlsx 
