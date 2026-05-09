@@ -1,9 +1,14 @@
 """
-Logging utilities for GNN PhysicsNeMo heat treatment training.
+Logging utilities for the GNN PhysicsNeMo heat-treatment training runs.
 
-Provides:
-  setup_logging(cfg)  → returns a Python logger, optionally initialises W&B
-  log_metrics(...)    → writes one epoch row to the log file + W&B if enabled
+Two helpers live here:
+  setup_logging(cfg)  -> returns a Python logger, optionally fires up a W&B run
+  log_metrics(...)    -> writes one epoch row to the log file (and W&B, if on)
+
+The split between console and file handlers is intentional. Console
+output is what shows up on the Alvis terminal during a live run, and
+the file handler keeps everything around for post-mortem inspection
+once the SLURM job has finished.
 """
 
 from __future__ import annotations
@@ -15,31 +20,46 @@ from pathlib import Path
 from datetime import datetime
 
 
+# Shared format strings — kept at module level so both handlers
+# write identical-looking lines and grep'ing across console + file
+# logs stays simple.
 _FORMAT     = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
 _DATE_FMT   = "%H:%M:%S"
+
+# Guard flag — handlers only get attached once even if setup_logging
+# is called multiple times (e.g. from a notebook re-import).
 _CONFIGURED = False
 
 
 def setup_logging(cfg) -> logging.Logger:
     """
-    Initialise root logger + file handler.
-    Optionally starts a W&B run if cfg.use_wandb is True.
+    Set up the root logger with both console and file handlers, and
+    optionally start a Weights & Biases run when cfg.use_wandb is True.
 
     Returns
     -------
-    logging.Logger  — named 'heat_gnn'
+    logging.Logger
+        Named 'heat_gnn' — every other module just grabs its own
+        sub-logger off this one (e.g. 'heat_gnn.checkpoint').
     """
     global _CONFIGURED
 
+    # The training log lives next to the checkpoints so a single
+    # output_dir holds everything from a given run.
     log_path = Path(cfg.log_dir) / "train.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not _CONFIGURED:
-        fmt     = logging.Formatter(_FORMAT, datefmt=_DATE_FMT)
-        # console handler
+        fmt = logging.Formatter(_FORMAT, datefmt=_DATE_FMT)
+
+        # Console handler — what shows up live on stdout while
+        # the SLURM job is running.
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(fmt)
-        # file handler  (appends — survives restart)
+
+        # File handler — appended to (mode="a") so a crashed-and-
+        # resumed run keeps a continuous log instead of clobbering
+        # the previous attempt.
         fh = logging.FileHandler(log_path, mode="a")
         fh.setFormatter(fmt)
 
@@ -51,7 +71,9 @@ def setup_logging(cfg) -> logging.Logger:
 
     logger = logging.getLogger("heat_gnn")
 
-    # ── Optional W&B ──────────────────────────────────────────────────
+    # ---- optional W&B run ------------------------------------------
+    # W&B is off by default — only flip it on for production runs
+    # that are worth tracking long-term.
     if getattr(cfg, "use_wandb", False):
         try:
             import wandb
@@ -74,6 +96,8 @@ def setup_logging(cfg) -> logging.Logger:
             logger.info("W&B run started: %s / %s",
                         cfg.wandb_project, cfg.wandb_run_name)
         except ImportError:
+            # Don't crash the run just because wandb is missing on
+            # the cluster — drop a warning and carry on.
             logger.warning("wandb not installed — skipping W&B logging.")
 
     logger.info("Log file: %s", log_path)
@@ -88,16 +112,20 @@ def log_metrics(
     cfg,
 ) -> None:
     """
-    Write one epoch summary line to the logger and (optionally) to W&B.
+    Write one epoch summary line to the logger and (optionally) push
+    the same numbers to W&B.
 
     Parameters
     ----------
     logger      : logger returned by setup_logging()
-    epoch       : current epoch number  (1-based)
+    epoch       : current epoch number (1-based)
     train_loss  : average training loss for this epoch
     val_metrics : dict with keys: loss, mae, rmse, r2, within_5K, within_10K
-    cfg         : BaseConfig instance (used for use_wandb flag)
+    cfg         : BaseConfig instance (used for the use_wandb flag)
     """
+    # One-line summary that gets greppable by epoch later. Keys that
+    # might not be in val_metrics fall back to NaN so the format
+    # string never blows up mid-training.
     logger.info(
         "Epoch %4d | train=%.5f | val=%.5f | MAE=%.2fK | "
         "R2=%.4f | W5K=%.1f%% | W10K=%.1f%%",
@@ -110,6 +138,9 @@ def log_metrics(
         val_metrics.get("within_10K", float("nan")),
     )
 
+    # Same numbers, different sink. Only push if W&B was actually
+    # initialised — the wandb.run check covers the case where
+    # cfg.use_wandb=True but the import failed earlier.
     if getattr(cfg, "use_wandb", False):
         try:
             import wandb
@@ -125,4 +156,7 @@ def log_metrics(
                     "val/within_10K":   val_metrics.get("within_10K", 0.0),
                 }, step=epoch)
         except ImportError:
+            # Same fallback as above — silently skip if wandb isn't
+            # importable, since the metrics already went to the file
+            # logger by the time this branch runs.
             pass

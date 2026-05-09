@@ -1,6 +1,16 @@
 """
-Unified Multi-Region GNN — Final Training Script.
-All fixes applied: curriculum, warmup, corrected physics, equilibrium.
+Unified multi-region GNN — main training script.
+
+Pulls together the dataset, the MeshGraphNet model, and the
+physics-informed loss into one training run. The pieces that
+took the most iteration to get right:
+
+  - region-weighted data loss (steel cylinder gets the bulk of
+    the gradient signal, outer enclosure gets almost none)
+  - 10% pushforward warmup before the second-step rollout target
+    is added to the loss
+  - a learning-rate warmup over the first 5-10% of training
+  - the four-term physics loss with realistic SI-unit scaling
 """
 from __future__ import annotations
 import sys, time, argparse
@@ -10,6 +20,7 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 
+# Make the project importable from this top-level training script
 sys.path.insert(0, str(Path(__file__).parent))
 
 from configs.base_config import CONFIG, BaseConfig
@@ -18,77 +29,111 @@ from utils.checkpoint import CheckpointManager
 from utils.metrics import compute_metrics, within_tolerance
 from data.dataset_unified import UnifiedDataset
 
-SIGMA = 5.67e-8
+SIGMA = 5.67e-8   # Stefan-Boltzmann, kept here for quick reference
 
-# ── Region-weighted loss (same as FNO: steel=10x, air=3x, outer=0.1x) ────
+
+# ---- region-weighted loss ---------------------------------------------
+# Same weighting scheme used in the FNO / DeepONet baselines so the
+# three architectures are graded on equal terms. The steel cylinder
+# is the engineering target, so it gets 10x. The outer enclosure
+# hardly moves during the heating phase, so 0.1x prevents that bulk
+# of "easy" cells from drowning out the cylinder signal.
 
 def get_region_weights(batch):
     rids = batch.region_ids
     w = torch.ones(rids.shape[0], device=rids.device)
-    w[rids == 0] = 10.0   # steel_cylinder
-    w[rids == 1] = 3.0    # inner_box
-    w[rids == 11] = 0.1   # outer_box
-    # heaters (2-10): weight 1.0 but masked out by heater_mask anyway
+    w[rids == 0] = 10.0   # steel_cylinder — the engineering target
+    w[rids == 1] = 3.0    # inner_box (cavity air) — the convective driver
+    w[rids == 11] = 0.1   # outer_box — quasi-static, small weight on purpose
+    # heaters (rids 2..10) keep weight 1.0 but are masked out further
+    # downstream by heater_mask, so the value here doesn't matter.
     return w.unsqueeze(-1)
 
+
 def weighted_mse(pred, target, weights):
+    # Plain MSE with per-node weights — keeps gradients well-behaved
+    # since the weights enter linearly inside the squared error.
     return (weights * (pred - target).pow(2)).mean()
 
 
-# ── Curriculum ────────────────────────────────────────────────────────
+# ---- training schedules ----------------------------------------------
+# Three small functions, each controls one knob over the course of
+# training: physics weight, pushforward weight, and the LR warmup.
 
 def get_physics_lambda(epoch, n_epochs):
-    return 0.001  # balanced 100:1 ratio for smooth convergence, 100x stronger physics (literature-standard PINN weight)
+    # Held at a constant 0.001 — corresponds to roughly a 100:1 ratio
+    # between data and physics gradients, which is the literature-
+    # standard PINN weight and gave the smoothest convergence here.
+    return 0.001
+
 
 def get_pushforward_weight(epoch, n_epochs):
+    # Pushforward (predict-then-feed-back) is held off for the first
+    # 10% of training so the model can lock onto a stable single-step
+    # mapping before being asked to absorb its own errors. After that
+    # the weight ramps linearly from 0 to 1 over the remaining epochs.
     warmup_end = int(n_epochs * 0.10)
     if epoch <= warmup_end:
         return 0.0
     return 1.0 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
+
 def get_warmup_lr(epoch, base_lr, warmup_epochs=5):
+    # Standard linear LR warmup — start at 10% of the target LR on
+    # epoch 1, ramp up to the full LR by `warmup_epochs`. After that
+    # ReduceLROnPlateau takes over.
     if epoch <= warmup_epochs:
         return base_lr * (0.1 + 0.9 * epoch / warmup_epochs)
     return base_lr
 
 
-# ── Corrected physics loss ────────────────────────────────────────────
+# ---- physics-informed loss --------------------------------------------
 
 def physics_loss_unified(pred, batch, T_std_ds, T_mean, dt=10.0):
     """
-    Professional physics-informed loss for furnace heat treatment.
+    Physics-informed loss for the furnace heat-treatment problem.
 
-    Based on energy conservation:
-        rho*Cp*dT/dt = kappa*Laplacian(T) + h*(T_set-T)/delta + eps*sigma*(T_set^4-T^4)/delta
+    Built on the energy balance:
+        rho*Cp*dT/dt = kappa*Laplacian(T)
+                     + h*(T_set - T) / delta
+                     + eps*sigma*(T_set^4 - T^4) / delta
 
-    Four terms:
-      1. L_cond: Fourier conduction   (per-node alpha = kappa/(rho*Cp))
-      2. L_conv: Newton convection    (h*(T_set-T)/(rho*Cp*delta))
-      3. L_rad:  Stefan-Boltzmann     (eps*sigma*(T_set^4-T^4)/(rho*Cp*delta))
-      4. L_eng:  combined energy balance
+    Combined as four residual terms:
+      1. L_cond — Fourier conduction         (per-node alpha = kappa/(rho*Cp))
+      2. L_conv — Newton convection          (h*(T_set-T)/(rho*Cp*delta))
+      3. L_rad  — Stefan-Boltzmann radiation (eps*sigma*(T_set^4-T^4)/(rho*Cp*delta))
+      4. L_eng  — combined energy balance    (residual on the sum)
+
+    Each residual is divided by its own characteristic scale so all
+    four land in roughly the same numerical range — otherwise the
+    radiation term (~1000 K/s at 1100 C) would swamp everything else.
     """
     from configs.base_config import SIGMA_SB, EMISSIVITY_STEEL, H_CONV, CHAR_THICKNESS
 
     device = pred.device
 
-    # Denormalize to Kelvin
+    # Bring the prediction back into Kelvin so the residuals can be
+    # written in plain SI units.
     T_next = pred.squeeze(-1) * T_std_ds + T_mean
     T_now  = batch.T_current.to(device)
     dT_dt  = (T_next - T_now) / dt                        # K/s
 
-    # Per-node properties (raw values, SI units)
+    # Per-node material properties (raw, un-rescaled SI values)
     T_set      = batch.T_set_raw.to(device)               # K
     kappa      = batch.kappa_raw.to(device)               # W/(m.K)
     Cp         = batch.Cp_raw.to(device)                  # J/(kg.K)
     rho        = batch.rho_raw.to(device)                 # kg/m^3
-    non_heater = (~batch.is_heater.bool()).float()
+    non_heater = (~batch.is_heater.bool()).float()        # mask: skip heater cells
 
-    # Derived
-    alpha  = kappa / (rho * Cp + 1e-8)                    # m^2/s
-    rho_cp = rho * Cp                                     # J/(m^3.K)
-    delta  = CHAR_THICKNESS                               # m
+    # Derived physical quantities
+    alpha  = kappa / (rho * Cp + 1e-8)                    # thermal diffusivity, m^2/s
+    rho_cp = rho * Cp                                     # volumetric heat capacity, J/(m^3.K)
+    delta  = CHAR_THICKNESS                               # V/A characteristic length, m
 
-    # 1. CONDUCTION — Fourier: dT/dt = alpha * Laplacian(T)
+    # 1. CONDUCTION — Fourier:  dT/dt = alpha * Laplacian(T)
+    # Approximate the Laplacian on the graph as the mean of the
+    # neighbour temperature differences (graph Laplacian, normalised
+    # by node degree so meshes with mixed connectivity behave the same).
     src_i, dst_i = batch.edge_index[0], batch.edge_index[1]
     N = T_now.shape[0]
     T_diff = T_now[dst_i] - T_now[src_i]
@@ -99,34 +144,42 @@ def physics_loss_unified(pred, batch, T_std_ds, T_mean, dt=10.0):
     lap_T = lap_T / degree.clamp(min=1.0)
 
     dT_dt_cond = alpha * lap_T
-    cond_res = (dT_dt - dT_dt_cond) / 10.0
+    cond_res = (dT_dt - dT_dt_cond) / 10.0                # /10 brings it into [0, 1]-ish range
     L_cond = (cond_res * non_heater).pow(2).mean()
 
-    # 2. CONVECTION — Newton's cooling
+    # 2. CONVECTION — Newton's law of cooling, plus an overshoot
+    # penalty so the model doesn't predict T_next > T_set
     dT_dt_conv = H_CONV * (T_set - T_now) / (rho_cp * delta + 1e-8)
-    conv_res = (dT_dt - dT_dt_conv) / 100.0  # proper scale (dT_dt_conv ~300 K/s)
+    conv_res = (dT_dt - dT_dt_conv) / 100.0               # dT_dt_conv tops out ~300 K/s
     L_conv_match = (conv_res * non_heater).pow(2).mean()
     overshoot = F.relu(T_next - T_set) * non_heater
     L_overshoot = (overshoot / T_set.clamp(min=300)).pow(2).mean()
     L_conv = 0.5 * L_conv_match + 0.5 * L_overshoot
 
-    # 3. RADIATION — Stefan-Boltzmann
+    # 3. RADIATION — Stefan-Boltzmann (T^4 dependence is what
+    # dominates the heating physics at 900-1100 C)
     dT_dt_rad = (EMISSIVITY_STEEL * SIGMA_SB *
                  (T_set.pow(4) - T_now.pow(4)) / (rho_cp * delta + 1e-8))
-    rad_res = (dT_dt - dT_dt_rad) / 1000.0  # proper scale (dT_dt_rad ~1000 K/s)
+    rad_res = (dT_dt - dT_dt_rad) / 1000.0                # dT_dt_rad ~1000 K/s at 1100 C
     L_rad = (rad_res * non_heater).pow(2).mean()
 
-    # 4. ENERGY BALANCE — combined
+    # 4. ENERGY BALANCE — the actual full residual that combines
+    # all three modes. Normalising by T_std^2 keeps it scale-
+    # consistent with the data MSE.
     dT_dt_total = dT_dt_cond + dT_dt_conv + dT_dt_rad
     L_eng = ((dT_dt - dT_dt_total) * non_heater).pow(2).mean() / (T_std_ds ** 2 + 1e-8)
 
+    # Final weighted sum. Conduction and convection get the bulk of
+    # the weight since they dominate inside the workpiece; radiation
+    # gets less because it's already huge in raw magnitude; the
+    # energy balance term is a soft global constraint.
     return 0.4 * L_cond + 0.3 * L_conv + 0.2 * L_rad + 0.1 * L_eng
 
 
-
-# ── Training ──────────────────────────────────────────────────────────
+# ---- training loop ----------------------------------------------------
 
 def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
+    """One pass over the training set. Returns (avg_total, avg_data, avg_phys)."""
     model.train()
     total_loss, total_data, total_phys, n = 0.0, 0.0, 0.0, 0
     dT_std = loader.dataset.dT_std
@@ -137,40 +190,53 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad()
-        
-        # v4 upgrade: Noise injection on temperature channel
+
+        # Light Gaussian noise on the temperature feature during
+        # training — the standard MeshGraphNet trick for stabilising
+        # autoregressive rollouts at inference. ~2.66 K in physical
+        # units after de-standardising.
         if model.training:
-            noise_std = 0.01  # ~2.66K in Kelvin
+            noise_std = 0.01
             batch.x = batch.x.clone()
             batch.x[:, 3] = batch.x[:, 3] + noise_std * torch.randn_like(batch.x[:, 3])
-        
+
         heater_mask = batch.is_heater.unsqueeze(-1).bool()
 
         pred1 = model(batch)
 
-
+        # Defensive guard — non-finite predictions early on can
+        # poison every subsequent batch through the optimiser, so
+        # skip the offending step rather than NaN-out the whole run.
         if not torch.isfinite(pred1).all():
-
-
             print(f'  WARN: non-finite pred1 at batch (skipping)')
-
-
             optimizer.zero_grad(); continue
+
+        # Mask out heater cells (Dirichlet BC, not predicted)
         pred1 = pred1.masked_fill(heater_mask, 0.0)
         target1 = batch.y.masked_fill(heater_mask, 0.0)
         rw = get_region_weights(batch)
         loss1 = weighted_mse(pred1, target1, rw)
 
         loss_data = loss1
+        # ---- pushforward step ----------------------------------------
+        # Predict t+1 from the model's own prediction at t (instead
+        # of the ground truth) and supervise against t+2. This is
+        # what teaches the model to absorb its own errors during the
+        # 326-step rollout at evaluation time.
         if w2 > 1e-6:
-            # Pushforward: predict step 2 using step 1's output
             with torch.no_grad():
                 T_pred1 = pred1.squeeze(-1).detach() * T_std_ds + T_mean
+                # Re-clamp the heater cells back to T_set — they
+                # don't update through the model.
                 T_pred1 = torch.where(batch.is_heater.bool(), batch.T_set_raw, T_pred1)
                 x2 = batch.x.clone()
                 x2[:, 3] = (T_pred1 - T_mean) / T_std_ds
+                # Advance the time feature by one step
                 x2[:, 6] = batch.x[:, 6] + cfg.dt / cfg.t_total
-            # Build a lightweight Data object — shares edge_index/edge_attr (no copy)
+
+            # Build a lightweight Data object — edge_index and
+            # edge_attr are shared with the original batch (no copy)
+            # because the graph topology hasn't changed.
             from torch_geometric.data import Data
             batch2 = Data(
                 x=x2, edge_index=batch.edge_index, edge_attr=batch.edge_attr,
@@ -182,8 +248,11 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
             target2 = batch.y2.masked_fill(heater_mask, 0.0)
             loss2 = weighted_mse(pred2, target2, rw)
             loss_data = loss1 + w2 * loss2
+            # Free the temporaries explicitly — pushforward roughly
+            # doubles activation memory per batch.
             del batch2, x2, T_pred1
 
+        # ---- physics loss --------------------------------------------
         if lam > 1e-6:
             L_phys = physics_loss_unified(pred1, batch, T_std_ds, T_mean)
             total_phys += L_phys.item()
@@ -193,6 +262,9 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
 
         loss.backward()
         if cfg.grad_clip > 0:
+            # Hard clip on the gradient norm — kept around because
+            # early epochs occasionally produced spikes that would
+            # otherwise destabilise the LayerNorms in the MLPs.
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         optimizer.step()
         total_loss += loss.item()
@@ -204,7 +276,12 @@ def train_one_epoch(model, loader, optimizer, device, cfg, lam, w2):
 
 @torch.no_grad()
 def evaluate(model, loader, device, lam=0.0):
-    """Validation: reports both data-only loss and total (data+physics) loss."""
+    """
+    Validation pass. Reports both the data-only loss (used for
+    model selection / scheduling) and the data+physics combined
+    loss (so the physics term's behaviour stays trackable in the
+    log), plus per-region MAE for the three predicted regions.
+    """
     model.eval()
     total_data, total_phys, n = 0.0, 0.0, 0
     all_pred_K, all_true_K = [], []
@@ -232,12 +309,16 @@ def evaluate(model, loader, device, lam=0.0):
         n += 1
 
         non_heater = ~batch.is_heater.bool()
-        # Model predicts normalised T_next directly
+        # Model predicts normalised T_next directly, so denormalise
+        # once and reuse for every per-region split below.
         T_pred = pred.squeeze(-1) * T_std_ds + T_mean
         T_true = batch.T_next
         all_pred_K.append(T_pred[non_heater].cpu().numpy())
         all_true_K.append(T_true[non_heater].cpu().numpy())
 
+        # Per-region split on the rescaled region_id feature. Note
+        # the thresholds — region IDs are stored as float i/11, so
+        # 0.0 = steel, 1/11 ~ 0.09 = inner_box, 11/11 = 1.0 = outer.
         rid = batch.x[:, 5]
         is_steel = (rid < 0.05) & non_heater
         is_air   = (rid > 0.05) & (rid < 0.14)
@@ -247,13 +328,15 @@ def evaluate(model, loader, device, lam=0.0):
                 region_preds[name].append(T_pred[mask].cpu().numpy())
                 region_trues[name].append(T_true[mask].cpu().numpy())
 
-        # Steel cylinder nodes: region_id = 0, normalised = 0/11 = 0.0
-        region_feat = batch.x[:, 5]  # region_id / 11
-        is_steel = (region_feat < 0.05) & non_heater  # region 0 = steel
+        # Steel cylinder MAE on its own — this is the headline
+        # number that ends up in Table 5.2 of the thesis.
+        region_feat = batch.x[:, 5]
+        is_steel = (region_feat < 0.05) & non_heater
         if is_steel.any():
             all_steel_pred.append(T_pred[is_steel].cpu().numpy())
             all_steel_true.append(T_true[is_steel].cpu().numpy())
 
+    # Aggregate metrics across the whole validation set
     all_pred_K = np.concatenate(all_pred_K)
     all_true_K = np.concatenate(all_true_K)
     m = compute_metrics(all_pred_K, all_true_K)
@@ -261,8 +344,8 @@ def evaluate(model, loader, device, lam=0.0):
     avg_phys = total_phys / max(n, 1)
     m["loss_data"] = avg_data                                          # pure data MSE
     m["loss_phys"] = avg_phys                                          # physics only
-    m["loss_total"] = (1 - lam) * avg_data + lam * avg_phys if lam > 1e-6 else avg_data  # combined
-    m["loss"] = avg_data                                               # model selection uses data-only
+    m["loss_total"] = (1 - lam) * avg_data + lam * avg_phys if lam > 1e-6 else avg_data
+    m["loss"] = avg_data                                               # model selection on data-only
     m["within_5K"] = within_tolerance(all_pred_K, all_true_K, 5.0)
 
     # Per-region MAE
@@ -285,14 +368,20 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch", type=int, default=2)
     parser.add_argument("--device", default=None)
-    parser.add_argument("--test", action="store_true", help="Run 1-batch sanity test")
-    parser.add_argument("--lam", type=float, default=None, help="Override physics lambda")
-    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
-    parser.add_argument("--checkpoint_dir", type=str, default=None, help="Override checkpoint output folder")
+    parser.add_argument("--test", action="store_true",
+                        help="Run a quick 1-batch sanity test and exit")
+    parser.add_argument("--lam", type=float, default=None,
+                        help="Override the physics lambda set by the schedule")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to a checkpoint to resume from")
+    parser.add_argument("--checkpoint_dir", type=str, default=None,
+                        help="Override the default checkpoint output folder")
     args = parser.parse_args()
 
     cfg = CONFIG
-    # node_in_features = 16 (now default in base_config.py)
+    # 16-dim node features is the default in base_config.py — kept
+    # the comment around so anyone reading this file knows where
+    # the magic number comes from.
     device = torch.device(
         args.device if args.device
         else ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -310,7 +399,10 @@ def main():
     train_ds = UnifiedDataset(h5, cfg, "train", "training")
     val_ds = UnifiedDataset(h5, cfg, "val", "training")
 
-    # Sanity test mode: just check 1 batch loads and forward pass works
+    # ---- sanity test mode --------------------------------------------
+    # Quick smoke test: load one batch, run forward + backward, check
+    # the physics loss returns a finite number. Useful for catching
+    # dataset/model wiring problems without waiting for a real epoch.
     if args.test:
         print("\n  === SANITY TEST MODE ===")
         loader = DataLoader(train_ds, batch_size=1, shuffle=False, num_workers=0)
@@ -330,19 +422,21 @@ def main():
         print(f"  Forward pass OK: output={out.shape}")
         print(f"  Output range: [{out.min().item():.4f}, {out.max().item():.4f}]")
 
-        # Test physics loss
+        # Physics loss check — catches scaling regressions
         dT_std = train_ds.dT_std
         dT_mean = train_ds.dT_mean
         L_phys = physics_loss_unified(out, batch, train_ds.T_std, train_ds.T_mean)
         print(f"  Physics loss OK: {L_phys.item():.6f}")
 
-        # Test backward pass — fresh forward with grad enabled
+        # Backward pass check — fresh forward with grad enabled, since
+        # the earlier one ran inside torch.no_grad().
         out_grad = model(batch)
         loss = F.mse_loss(out_grad, batch.y)
         loss.backward()
         print(f"  Backward pass OK: data_loss={loss.item():.6f}")
 
-        # Check graph structure
+        # Quick look at the graph wiring — confirms cross-region
+        # boundary edges actually got built.
         n_boundary = 0
         rids = batch.region_ids if hasattr(batch, 'region_ids') else None
         if rids is not None:
@@ -356,20 +450,28 @@ def main():
         print(f"  Ready to train: sbatch run_alvis_unified.sh")
         return
 
+    # ---- full training run -------------------------------------------
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                                num_workers=8, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
                              num_workers=4)
 
     model = HeatTreatmentGNN(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)  # v4 upgrade
+    # AdamW + small weight decay — generalised better than plain Adam
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # Plateau scheduler for the post-warmup phase. min_lr stops the
+    # decay before things get silly close to zero.
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=15, factor=0.5, min_lr=1e-6)
+
+    # Default checkpoint dir lives next to the configured outputs;
+    # --checkpoint_dir lets the SLURM script point each run at its
+    # own folder so concurrent runs don't clobber each other.
     ckpt_dir = args.checkpoint_dir if args.checkpoint_dir else str(Path(cfg.checkpoint_dir).parent / "checkpoints_unified")
     print(f"  Checkpoints will be saved to: {ckpt_dir}")
     ckpt_mgr = CheckpointManager(ckpt_dir)
 
-    # Resume from checkpoint if specified
+    # Optional resume from an earlier checkpoint
     start_epoch = 1
     if args.resume:
         print(f"\n  Resuming from checkpoint: {args.resume}")
@@ -383,6 +485,7 @@ def main():
         print(f"  Resumed at epoch {start_epoch}")
         print(f"  Previous best Steel MAE: {prev_mae}")
 
+    # ---- log table header --------------------------------------------
     print(f"  {'Ep':>4} | {'TrLoss':>9} | {'TrData':>9} | "
           f"{'TrPhys':>9} | {'VaData':>9} | "
           f"{'VaPhys':>9} | {'VaTotal':>9} | "
@@ -395,6 +498,7 @@ def main():
     n_ep = args.epochs
 
     for epoch in range(start_epoch, n_ep + 1):
+        # Schedule knobs for this epoch (lambda, pushforward, LR)
         lam = get_physics_lambda(epoch, n_ep) if args.lam is None else args.lam
         ep_start = time.time()
         w2 = get_pushforward_weight(epoch, n_ep)
@@ -406,6 +510,8 @@ def main():
             model, train_loader, optimizer, device, cfg, lam=lam, w2=w2)
         val_m = evaluate(model, val_loader, device, lam=lam)
 
+        # Hold the plateau scheduler off for the first 5 epochs so
+        # the LR warmup gets to do its job uninterrupted.
         if epoch > 5:
             scheduler.step(val_m["loss"])
 
@@ -428,7 +534,10 @@ def main():
     print(f"  Best MAE: {ckpt_mgr.best_mae:.3f}K (epoch {ckpt_mgr.best_epoch})")
     print(f"  Avg epoch time: {total_time/n_ep:.1f}s")
 
-    # Inference speed test
+    # ---- inference speed test ----------------------------------------
+    # Quick benchmark of the trained model so the speed-up numbers
+    # in the thesis can be reproduced from any run. 10-pass warmup,
+    # then average over 100 timed forward passes.
     print(f"\n  === INFERENCE SPEED TEST ===")
     model.eval()
     batch = next(iter(val_loader))
