@@ -1,10 +1,27 @@
-"""PI-DeepONet training loop — autograd physics, matched to FNO/GNN."""
+"""
+PI-DeepONet training loop.
+
+Combines the DeepONet model, the autograd-based physics loss, and
+the same training conventions used in the FNO and GNN pipelines:
+  - region-weighted data loss (steel=10x, air=3x, others=0.1x)
+  - 10% pushforward warmup before the second-step rollout target
+    enters the loss
+  - linear LR warmup over the first 5-10% of training, then
+    ReduceLROnPlateau for the tail
+  - constant physics lambda (gentle regulariser, not a hard
+    constraint — see configs/deeponet_config.py for the rationale)
+
+Every knob is overridable from the CLI for ablation runs:
+  --no_physics, --no_pushforward, --lam, --epochs, --batch, --lr.
+"""
 from __future__ import annotations
 import argparse, json, math, sys, time
 from pathlib import Path
 import numpy as np
 import torch
+
 sys.path.insert(0, ".")
+
 from configs.deeponet_config import CONFIG
 from data.dataset import get_deeponet_dataloaders
 from models.deeponet_model import HeatTreatmentDeepONet
@@ -15,24 +32,57 @@ from utils.metrics import compute_metrics
 from utils.logging import setup_logging
 
 
+# ---- training schedules ----------------------------------------------
+# Three small functions, each controls one knob over training:
+# physics weight, pushforward weight, and the LR warmup. Same shape
+# as the FNO / GNN training scripts so the three runs can be lined
+# up by epoch when comparing curves.
+
 def get_physics_lambda(epoch, n_epochs):
-    """Static physics lambda = 0.003 (matches GNN and FNO v4 FINAL)."""
+    """
+    Held at 0.003 across all epochs. Same value as the FNO / GNN
+    final physics weights, which keeps the physics contribution
+    comparable across the three architectures.
+    """
     return 0.003
 
 
 def get_pushforward_weight(epoch, n_epochs):
+    """
+    Pushforward weight ramp.
+
+    Held off for the first 10% of training so the model can lock
+    onto a stable single-step mapping before being asked to absorb
+    its own errors. After that the weight ramps linearly from 0 to
+    1 over the remaining epochs.
+    """
     warmup_end = int(n_epochs * 0.10)
     if epoch <= warmup_end: return 0.0
     return 1.0 * (epoch - warmup_end) / (n_epochs - warmup_end)
 
 
 def get_warmup_lr(epoch, base_lr, warmup_epochs=20):
+    """
+    Linear LR warmup. Starts at 10% of the target LR on epoch 1 and
+    ramps up to the full LR by `warmup_epochs`. After that
+    ReduceLROnPlateau takes over.
+    """
     if epoch <= warmup_epochs:
         return base_lr * (0.1 + 0.9 * epoch / warmup_epochs)
     return base_lr
 
 
 def _build_trunk_with_grad(xyz, region_id, is_heater, kappa, Cp, rho):
+    """
+    Reassemble the trunk feature tensor with a gradient-tracked xyz.
+
+    The dataset returns the trunk feature stack pre-built, but the
+    physics loss needs the spatial coordinates to be a leaf tensor
+    with requires_grad so autograd can compute ∇²T against them.
+    Building the trunk here from the (xyz, static channels) lets
+    the autograd graph reach back to xyz through the model's
+    forward pass.
+    """
     static = torch.stack([
         region_id, is_heater,
         kappa / 100.0, Cp / 1000.0, rho / 10000.0,
@@ -40,32 +90,59 @@ def _build_trunk_with_grad(xyz, region_id, is_heater, kappa, Cp, rho):
     return torch.cat([xyz, static], dim=-1)
 
 
+# ---- training step --------------------------------------------------
+
 def train_one_epoch(model, loader, optimizer, criterion, device,
                     T_mean, T_std, grad_clip, w2, lam, dt=10.0,
                     noise_std=0.01, t_total=3460.0):
+    """
+    Run one full epoch over the training set.
+
+    Returns a dict of average loss components — useful for the
+    epoch-summary log line and for the saved training_history.json.
+    """
     model.train()
     totals = {"loss":0,"data":0,"phys":0,"cond":0,"conv":0,"rad":0,"overshoot":0,"pf":0}
     n = 0
     for batch_ in loader:
+        # Unpack the 13-tuple emitted by the DeepONet dataset.
+        # Order matters; see data/dataset.py for the layout.
         (branch, scalars, _trunk_old, y, T_cur_K, T_next_gt, w,
          xyz, rid, is_heat, kappa, Cp, rho) = [
             b.to(device, non_blocking=True) if isinstance(b, torch.Tensor) else b
             for b in batch_]
+
+        # Light Gaussian noise on the temperature channel during
+        # training — same MeshGraphNet trick used in the FNO / GNN
+        # pipelines, helps the model stay stable across the long
+        # autoregressive rollout. ~2.66 K in physical units after
+        # de-standardising.
         if noise_std > 0:
             branch = branch.clone()
             branch[:,0:1,:] = branch[:,0:1,:] + torch.randn_like(branch[:,0:1,:])*noise_std
+
+        # Spatial coords need requires_grad for the physics loss to
+        # autograd-compute the Laplacian. When physics is off, skip
+        # the grad tracking to save memory.
         use_phys = lam > 1e-6
         xyz_grad = xyz.clone().detach().requires_grad_(use_phys)
         trunk = _build_trunk_with_grad(xyz_grad, rid, is_heat, kappa, Cp, rho)
 
         optimizer.zero_grad()
         pred1 = model(branch, scalars, trunk)
+
+        # Second forward pass at t+dt is only needed when the
+        # physics loss is active — it provides the ∂T/∂t finite
+        # difference target. Time channel gets bumped by dt/t_total
+        # to advance the trunk into the next-step state.
         pred_next = None
         if use_phys:
             scalars_next = scalars.clone()
             scalars_next[:,1] = scalars_next[:,1] + dt / t_total
             pred_next = model(branch, scalars_next, trunk)
 
+        # Recover T_set in Kelvin from the normalised scalar channel
+        # so the criterion can build its residuals in plain SI units.
         T_set_K = scalars[:,0] * T_std + T_mean
         loss1, parts = criterion(
             pred_norm=pred1, target_norm=y, weight=w,
@@ -81,6 +158,11 @@ def train_one_epoch(model, loader, optimizer, criterion, device,
             dt=dt,
         )
 
+        # ---- pushforward step --------------------------------------
+        # Approximate the t+1 input by shifting the branch sensor
+        # field by the prediction's mean correction. Cheaper than
+        # re-interpolating the full sensor field, and good enough
+        # to penalise drift across consecutive steps.
         loss = loss1
         pf_val = 0.0
         if w2 > 1e-6:
@@ -88,6 +170,9 @@ def train_one_epoch(model, loader, optimizer, criterion, device,
                 shift = pred1.mean(dim=1, keepdim=True).unsqueeze(1)
             branch_pf = branch.clone()
             branch_pf[:,0:1,:] = branch_pf[:,0:1,:] + shift
+            # xyz is detached for the pushforward branch — the
+            # pushforward target is data-only, no physics autograd
+            # needs to flow through it.
             trunk_pf = _build_trunk_with_grad(
                 xyz_grad.detach(), rid, is_heat, kappa, Cp, rho)
             pred_pf = model(branch_pf, scalars, trunk_pf)
@@ -97,6 +182,10 @@ def train_one_epoch(model, loader, optimizer, criterion, device,
 
         loss.backward()
         if grad_clip:
+            # Hard clip on the gradient norm — kept around because
+            # the autograd-Laplacian path occasionally produces
+            # gradient spikes during early epochs that would
+            # otherwise destabilise the LayerNorms in the MLPs.
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
@@ -109,12 +198,19 @@ def train_one_epoch(model, loader, optimizer, criterion, device,
         totals["overshoot"] += parts.get("overshoot",0.0)
         totals["pf"]   += pf_val
         n += 1
+
+    # Per-batch average for every accumulator
     for k in totals: totals[k] /= max(n,1)
     return totals
 
 
 @torch.no_grad()
 def evaluate(model, loader, criterion, device, T_mean, T_std):
+    """
+    Validation pass without physics — physics loss requires
+    requires_grad on xyz, which doesn't compose with @torch.no_grad.
+    Reports overall MAE in Kelvin and R^2.
+    """
     model.eval()
     losses, maes, r2s = [], [], []
     for batch_ in loader:
@@ -126,6 +222,7 @@ def evaluate(model, loader, criterion, device, T_mean, T_std):
             pred_norm=pred, target_norm=y, weight=w,
             T_set=T_set_K, T_mean=T_mean, T_std=T_std)
         losses.append(float(loss))
+        # Denormalise back to Kelvin for the physical-unit metrics
         pred_K = pred.cpu().numpy() * T_std + T_mean
         true_K = T_gt.cpu().numpy()
         m = compute_metrics(pred_K.reshape(-1), true_K.reshape(-1))
@@ -133,18 +230,26 @@ def evaluate(model, loader, criterion, device, T_mean, T_std):
     return float(np.mean(losses)), float(np.mean(maes)), float(np.mean(r2s))
 
 
+# ---- main -----------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch", type=int, default=4)
-    parser.add_argument("--lam", type=float, default=None)
+    parser.add_argument("--lam", type=float, default=None,
+                        help="Override the physics lambda set by the schedule")
     parser.add_argument("--device", default=None)
-    parser.add_argument("--no_pushforward", action="store_true")
-    parser.add_argument("--no_physics", action="store_true")
-    parser.add_argument("--test", action="store_true")
-    parser.add_argument("--checkpoint_dir", type=str, default=None, help="Override checkpoint output folder")
+    parser.add_argument("--no_pushforward", action="store_true",
+                        help="Disable the pushforward branch entirely (ablation)")
+    parser.add_argument("--no_physics", action="store_true",
+                        help="Disable the physics loss entirely (ablation)")
+    parser.add_argument("--test", action="store_true",
+                        help="Run a quick 1-batch sanity test and exit")
+    parser.add_argument("--checkpoint_dir", type=str, default=None,
+                        help="Override the default checkpoint output folder")
     args = parser.parse_args()
+
     cfg = CONFIG
     if args.epochs: cfg.n_epochs = args.epochs
     if args.lr: cfg.learning_rate = args.lr
@@ -175,14 +280,27 @@ def main():
     T_mean, T_std = train_ds.T_mean, train_ds.T_std
     print(f"  Stats: T_mean={T_mean:.1f} K   T_std={T_std:.1f} K\n")
 
+    # ---- model, optimiser, scheduler -------------------------------
     model = HeatTreatmentDeepONet(cfg).to(device)
+    # AdamW + small weight decay — same setup that worked for the
+    # FNO and GNN, generalised better than plain Adam in early sweeps.
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=1e-4)
     scheduler = build_scheduler(optimizer, cfg)
     criterion = DeepONetLoss(lambda_physics=cfg.lambda_physics)
+
+    # Default checkpoint dir lives under cfg.checkpoint_dir;
+    # --checkpoint_dir lets the SLURM script point each run at its
+    # own folder so concurrent runs don't clobber each other.
     ckpt_dir = args.checkpoint_dir if args.checkpoint_dir else cfg.checkpoint_dir
     print(f"  Checkpoints will be saved to: {ckpt_dir}")
     ckpt_mgr = CheckpointManager(ckpt_dir)
 
+    # ---- sanity test mode ------------------------------------------
+    # Quick smoke test: load one batch, run forward + backward,
+    # print shapes + a few sanity numbers, and verify the autograd
+    # path through xyz actually populates xyz.grad. Useful for
+    # catching dataset/model wiring issues without waiting for a
+    # full epoch.
     if args.test:
         print("=== SANITY TEST ===")
         batch_ = next(iter(train_loader))
@@ -208,6 +326,10 @@ def main():
               f"rad={parts.get('rad',0):.4f}  overshoot={parts.get('overshoot',0):.4f}")
         loss.backward()
         print(f"\n  Backward pass: OK")
+        # Confirms autograd actually reached xyz through the trunk
+        # (if this prints all zeros, the physics loss isn't connected
+        # to the model output graph and the run is effectively
+        # data-only)
         print(f"  xyz.grad range: [{xyz_g.grad.min().item():.3e},{xyz_g.grad.max().item():.3e}]")
         print("\n  Schedule preview (100 epochs):")
         for ep in [1, 10, 11, 50, 100]:
@@ -216,6 +338,9 @@ def main():
         print("=== OK ===")
         return
 
+    # ---- full training run -----------------------------------------
+    # history is dumped to JSON at the end so plotting scripts can
+    # rebuild loss curves without re-parsing the text log.
     history = {"train_loss":[],"val_loss":[],"val_mae":[],"val_r2":[],
                "lr":[],"w2":[],"lam":[],"pf_loss":[],
                "tr_data":[],"tr_phys":[],"L_cond":[],"L_conv":[],"L_rad":[]}
@@ -228,12 +353,17 @@ def main():
     best_mae = float("inf")
     t0 = time.time()
     for epoch in range(1, cfg.n_epochs + 1):
+        # Schedule knobs for this epoch — CLI flags can override
+        # both lambda and the pushforward weight for ablations.
         if args.no_physics: lam = 0.0
         elif LAM_OVERRIDE is not None: lam = LAM_OVERRIDE
         else: lam = get_physics_lambda(epoch, cfg.n_epochs)
         w2 = 0.0 if args.no_pushforward else get_pushforward_weight(epoch, cfg.n_epochs)
         lr = get_warmup_lr(epoch, cfg.learning_rate, warmup_epochs=max(5, cfg.n_epochs//10))
         for pg in optimizer.param_groups: pg["lr"] = lr
+        # Push the current lambda into the criterion so the loss
+        # weighting tracks the schedule without rebuilding the
+        # criterion every epoch.
         criterion.lambda_physics = lam
 
         t_ep = time.time()
@@ -241,10 +371,13 @@ def main():
                              T_mean, T_std, cfg.grad_clip, w2, lam,
                              dt=cfg.dt, t_total=cfg.t_total)
         val_loss, val_mae, val_r2 = evaluate(model, val_loader, criterion, device, T_mean, T_std)
+        # Hold the plateau scheduler off for the first 5 epochs so
+        # the LR warmup gets to do its job uninterrupted.
         if epoch > 5: scheduler.step(val_loss)
         dt_ep = time.time() - t_ep
         lr_now = optimizer.param_groups[0]["lr"]
 
+        # Append everything to the history log for later plotting
         for k, v in [("train_loss",tr["loss"]),("tr_data",tr["data"]),
                      ("tr_phys",tr["phys"]),("L_cond",tr["cond"]),
                      ("L_conv",tr["conv"]),("L_rad",tr["rad"]),
@@ -258,6 +391,9 @@ def main():
               f"{val_loss:>9.4f} | {val_mae:>8.3f} | {val_r2:>7.4f} | "
               f"{lam:>7.4f} | {w2:>6.3f} | {lr_now:>9.2e} | {dt_ep:>6.1f}")
 
+        # Checkpoint book-keeping: best-so-far overwrites best.pt,
+        # periodic saves keep a rolling history under
+        # checkpoint_epoch####.pt for ablation rollback.
         if val_mae < best_mae:
             best_mae = val_mae
             ckpt_mgr.save_best(model, optimizer, scheduler, epoch, {"mae":val_mae,"r2":val_r2})
@@ -265,6 +401,8 @@ def main():
             ckpt_mgr.save_epoch(model, optimizer, scheduler, epoch, {"mae":val_mae,"r2":val_r2})
 
     total = time.time() - t0
+    # Dump the full per-epoch history alongside the checkpoints so
+    # plotting scripts can read it without re-running training.
     with open(f"{cfg.output_dir}/training_history.json", "w") as f:
         json.dump(history, f, indent=2)
     print(f"\n  Training done in {total/60:.1f} min ({total/3600:.2f} hrs)")
