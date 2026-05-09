@@ -1,45 +1,34 @@
-# ── Large binary/simulation files ────────────────────────────────────────────
+# Ignore everything
+*
 
-# ── OpenFOAM time directories (numbered folders) ─────────────────────────────
-base_case_that_runs_chnage/[1-9]*/
-base_case_that_runs_chnage/VTK/
-base_case_that_runs_chnage/results/
-base_case_that_runs_chnage/figures/
-base_case_that_runs_chnage/log_files/
-base_case_that_runs_chnage/log.*
-base_case_that_runs_chnage/*.btr
-base_case_that_runs_chnage/flat_XY_dataset.h5
-base_case_that_runs_chnage/steel_cylinder_T_timeseries.h5
+# Allow gitignore itself
+!.gitignore
 
-# ── GNN outputs ───────────────────────────────────────────────────────────────
-GNN_PhysicsNeMo_Official/outputs/
-GNN_PhysicsNeMo_Official/training_output.log
+# Allow README
+!README.md
 
-# ── Dataset creation outputs ──────────────────────────────────────────────────
-Testing_Create_Dataset/
+# Allow these folders
+!Dataset_creation/
+!GNN_PhysicsNeMo_Official/
+!FNO_PhysicsNeMo_Official/
+!DeepONet_PhysicsNeMo_Official/
 
-# ── Python ────────────────────────────────────────────────────────────────────
+# Allow contents inside them
+!Dataset_creation/**
+!GNN_PhysicsNeMo_Official/**
+!FNO_PhysicsNeMo_Official/**
+!DeepONet_PhysicsNeMo_Official/**
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
+
+# Virtual env
 .venv/
-*.egg-info/
 
-# ── Environment ───────────────────────────────────────────────────────────────
-.env
-
-# ── Logs ─────────────────────────────────────────────────────────────────────
+# Logs
 *.log
 
-# ── New 16 cases dataset (too large for git) ──────────────────────────────────
-New_16_Datasets/
-
-# ── Standalone build script (replaced by Dataset_creation pipeline) ───────────
-build_all_regions_dataset.py
-
-# ── Data and evaluation folders ───────────────────────────────────────────────
-data/
-evaluation/
-
-# ── HDF5 dataset files ───────────────────────────────────────────────────────
+# Large data
 *.h5
