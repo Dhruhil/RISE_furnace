@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "RISE_furnace: Digital Twin modeling of heat treatment of cast metals using OpenFOAM and physics-informed AI"
+authors:
+  - family-names: "Patel"
+    given-names: "Dhruhil"
+  - family-names: "Saroja"
+    given-names: "Jini"
+version: "1.0.0"
+date-released: "2026-10-10"
+doi: "10.5281/zenodo.23287370"
+license: MIT
+repository-code: "https://github.com/Dhruhil/RISE_furnace"
+url: "https://hj.diva-portal.org/smash/record.jsf?pid=diva2:2071559"
+keywords:
+  - digital twin
+  - heat treatment
+  - cast metals
+  - OpenFOAM
+  - physics-informed neural networks
+  - DeepONet
+  - FNO
+  - GNN
+  - NVIDIA PhysicsNeMo
+references:
+  - type: thesis
+    authors:
+      - family-names: "Patel"
+        given-names: "Dhruhil"
+      - family-names: "Saroja"
+        given-names: "Jini"
+    title: "Digital Twin modeling of heat treatment of cast metals using OpenFOAM and physics-informed AI"
+    thesis-type: "Master's thesis (Paper within Artificial Intelligence)"
+    institution:
+      name: "Jönköping University"
+    year: 2026
+    month: 5
+    url: "https://hj.diva-portal.org/smash/record.jsf?pid=diva2:2071559"
