@@ -1,6 +1,11 @@
-# Simulating Heat Treatment of Cast Metal Products using OpenFOAM and AI
+# Digital Twin Modeling of Heat Treatment of Cast Metals using OpenFOAM and Physics-Informed AI
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23287370.svg)](https://doi.org/10.5281/zenodo.23287370)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Master's Thesis** — *RISE Research Institutes of Sweden / Jönköping University*
+
+📄 **Thesis (full text):** [DiVA portal](https://hj.diva-portal.org/smash/record.jsf?pid=diva2:2071559)
 
 This repository contains the complete digital-twin pipeline for the heat
 treatment of cast metal components: a validated OpenFOAM ground-truth
